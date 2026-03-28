@@ -552,7 +552,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
           </div>
         </div>
         <div style={{fontSize:13,color:T.muted,margin:"0 auto",lineHeight:1.6}}>
-          Drop in a report from your <span style={{color:T.green,fontWeight:600}}>People</span> team and <span style={{color:T.navy,fontWeight:600}}>Signal</span> will read it, visualize it, and help you tell the story.
+          Drop in a report from your <span style={{color:T.muted}}>People</span> team and <span style={{color:T.navy,fontWeight:600}}>Signal</span> will read it, visualize it, and help you tell the story.
         </div>
       </div>
       <div style={{width:"100%",maxWidth:500,background:T.card,border:`1px solid ${T.border}`,borderRadius:12,overflow:"hidden"}}>
