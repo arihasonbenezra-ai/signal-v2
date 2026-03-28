@@ -154,7 +154,7 @@ async function exportPDF(analysis, summaryCards, fileName, isPipelineReport, pip
 
   if (filterEntries.length > 0 && filteredRows && filteredRows.length > 0) {
     try {
-      const apiRes = await fetch("/api/anthropic/v1/messages", {
+      const apiRes = await fetch("/api/chat", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
@@ -405,7 +405,7 @@ export default function Signal() {
       const sample = rows.slice(0,60);
       const ctrl = new AbortController();
       const to = setTimeout(()=>ctrl.abort(), 45000);
-      const res = await fetch("/api/anthropic/v1/messages",{
+      const res = await fetch("/api/chat",{
         method:"POST", signal:ctrl.signal,
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
@@ -480,7 +480,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
     const updated=[...chatMsgs,{role:"user",content:msg}];
     setChatMsgs(updated);
     try {
-      const res=await fetch("/api/anthropic/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+      const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:800,
           system:`Talent analytics expert. Dataset: "${fileName}", ${data.length} rows. Columns: ${headers.join(", ")}. Sample: ${JSON.stringify(filteredData.slice(0,40))}. Be concise, cite numbers.`,
           messages:updated})});
