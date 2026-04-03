@@ -119,6 +119,22 @@ function toCSVUrl(url) {
   return `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv&gid=${gid}`;
 }
 
+/** Avoids `Unexpected end of JSON input` when the body is empty (wrong route, HTML fallback, proxy off). */
+async function readJsonResponse(res) {
+  const text = await res.text();
+  if (!text || !text.trim()) {
+    const hint = res.status === 404
+      ? " /api/chat is missing — in dev, set ANTHROPIC_API_KEY in .env and restart Vite (proxy forwards to Anthropic)."
+      : "";
+    throw new Error(`Empty response (HTTP ${res.status}).${hint}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Invalid JSON from server (${res.status}): ${text.slice(0, 160)}${text.length > 160 ? "…" : ""}`);
+  }
+}
+
 async function exportPDF(analysis, summaryCards, fileName, isPipelineReport, pipelineNumericCols, activeFilters, filteredCount, totalCount, filteredRows) {
   const doc = window._jsPDF && new window._jsPDF.jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
   if (!doc) { alert("PDF library still loading — try again."); return; }
@@ -169,7 +185,8 @@ async function exportPDF(analysis, summaryCards, fileName, isPipelineReport, pip
           }]
         })
       });
-      const apiData = await apiRes.json();
+      const apiData = await readJsonResponse(apiRes);
+      if (apiData.error) throw new Error(apiData.error.message || "API error");
       const parsed = JSON.parse(apiData.content[0].text.replace(/```json\n?|```/g, "").trim());
       briefText = parsed.brief;
       insightsList = parsed.insights;
@@ -277,18 +294,25 @@ export default function Signal() {
       if (!vals.length) return false;
       if (isNumericCol(vals)) return false;
       const unique = new Set(vals.map(String));
-      return unique.size >= 2 && unique.size <= 15;
+      return unique.size >= 2 && unique.size <= 25;
     });
+    const pick = (fn) => catCols.find(fn);
+    const notIn = (arr) => (h) => h && !arr.includes(h);
     if (isPipelineReport) {
-      const rec = catCols.find(h=>isRecruiterCol(h));
-      const dept = catCols.find(h=>isDeptCol(h)&&h!==rec);
-      const role = catCols.find(h=>isRoleCol(h)&&h!==rec&&h!==dept);
-      return [rec,dept,role].filter(Boolean);
+      const rec = pick(h=>isRecruiterCol(h));
+      const dept = pick(h=>isDeptCol(h)&&h!==rec);
+      const role = pick(h=>isRoleCol(h)&&h!==rec&&h!==dept);
+      const extra = catCols.filter(notIn([rec,dept,role])).filter(h=>/review|stage|status|priority|confidential|type|disposition|hm|manager/i.test(h)).slice(0,3);
+      const base = [rec,dept,role].filter(Boolean);
+      return [...base,...extra].filter((h,i,a)=>a.indexOf(h)===i).slice(0,6);
     }
-    const rec = catCols.find(h=>isRecruiterCol(h));
-    const status = catCols.find(h=>isStatusCol(h));
-    const loc = catCols.find(h=>/location|city|office|site/i.test(h));
-    return [rec,status,loc].filter(Boolean).slice(0,3);
+    const rec = pick(h=>isRecruiterCol(h));
+    const status = pick(h=>isStatusCol(h));
+    const loc = pick(h=>/location|city|office|site/i.test(h));
+    const reviewish = pick(h=>h!==rec&&h!==status&&h!==loc&&/review|stage|priority|confidential|type|disposition|hm|manager|recruit|opening|req/i.test(h));
+    const base = [rec,status,loc,reviewish].filter(Boolean);
+    const rest = catCols.filter(notIn(base)).slice(0, Math.max(0, 6-base.length));
+    return [...base,...rest].filter((h,i,a)=>a.indexOf(h)===i).slice(0,6);
   },[headers, data, analysis, isPipelineReport]);
 
   // ─── DERIVED: filtered data ───────────────────────────────────────────────
@@ -387,6 +411,20 @@ export default function Signal() {
     });
   },[filteredData,analysis,headers,isPipelineReport,pipelineNumericCols]);
 
+  /** Table columns for drill-down: prefer sheet column order; fallback if row keys were empty. */
+  const drillTableCols = useMemo(()=>{
+    if (!drillDown?.rows?.length) return [];
+    const keysFromRows = new Set();
+    drillDown.rows.forEach((r) => {
+      if (r && typeof r === "object") Object.keys(r).forEach((k) => keysFromRows.add(k));
+    });
+    const ordered = headers.filter((h) => h && keysFromRows.has(h));
+    if (ordered.length) return ordered.slice(0, 16);
+    const adhoc = [...keysFromRows];
+    if (adhoc.length) return adhoc.slice(0, 16);
+    return headers.filter(Boolean).slice(0, 16);
+  }, [drillDown, headers]);
+
   // ─── PROCESSING ───────────────────────────────────────────────────────────
   const startProc = () => {
     const msgs=["Reading your data...","Cleaning the report...","Finding the signal...","Building your brief..."];
@@ -433,8 +471,8 @@ xKey and yKeys must be exact column names from the dataset.`}]
         })
       });
       clearTimeout(to); stopProc();
-      const d = await res.json();
-      if (d.error) throw new Error(d.error.message);
+      const d = await readJsonResponse(res);
+      if (d.error) throw new Error(d.error.message || String(d.error.type || "API error"));
       const json = JSON.parse(d.content[0].text.replace(/```json\n?|```/g,"").trim());
       setAnalysis({...json, totalRows:rows.length});
       setChatMsgs([]); setStep("results");
@@ -487,23 +525,30 @@ xKey and yKeys must be exact column names from the dataset.`}]
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:800,
           system:`Talent analytics expert. Dataset: "${fileName}", ${data.length} rows. Columns: ${headers.join(", ")}. Sample: ${JSON.stringify(filteredData.slice(0,40))}. Be concise, cite numbers.`,
           messages:updated})});
-      const d=await res.json();
-      setChatMsgs([...updated,{role:"assistant",content:d.content[0].text}]);
+      const d = await readJsonResponse(res);
+      if (d.error) throw new Error(d.error.message || "API error");
+      const reply = d.content?.[0]?.text ?? "No reply in response.";
+      setChatMsgs([...updated,{role:"assistant",content:reply}]);
     } catch { setChatMsgs([...updated,{role:"assistant",content:"Error — please try again."}]); }
     setAsking(false);
   };
 
-  const handleChartClick = (payload, _idx, event) => {
+  // Recharts 3: BarChart-level onClick passes (state, event), not bar payload — handle clicks on <Bar> instead.
+  const handleBarClick = (entry, index) => {
     if (!analysis) return;
-    const label = payload?.activeLabel||payload?.activePayload?.[0]?.payload?.[chartXKey]||payload?.name;
-    if (!label) return;
-    setDrillDown(null);
     const xk = chartXKey;
-    const rows = filteredData.filter(r=>{
-      const val = isStatusCol(xk)?normalizeStatus(String(r[xk]||"")):String(r[xk]||"");
-      return val===String(label);
+    const payload = entry?.payload ?? entry;
+    let raw = payload?.[xk];
+    if ((raw == null || raw === "") && typeof index === "number" && chartData[index]) {
+      raw = chartData[index][xk];
+    }
+    if (raw == null && raw !== 0) return;
+    const label = isStatusCol(xk) ? normalizeStatus(String(raw)) : String(raw);
+    const rows = filteredData.filter((r) => {
+      const val = isStatusCol(xk) ? normalizeStatus(String(r[xk] || "")) : String(r[xk] || "");
+      return val === label;
     });
-    if (rows.length) setDrillDown({label,rows,isRecruiter:isRecruiterCol(xk)||isDeptCol(xk)});
+    if (rows.length) setDrillDown({ label, rows, isRecruiter: isRecruiterCol(xk) || isDeptCol(xk) });
   };
 
   const renderChart = () => {
@@ -513,14 +558,14 @@ xKey and yKeys must be exact column names from the dataset.`}]
     const ax = {tick:{fill:T.muted,fontSize:11,fontFamily:"Inter,sans-serif"}};
     const barKeys = isPipelineReport ? pipelineNumericCols.map(c=>shortStage(c)) : ["Count"];
     return (
-      <ResponsiveContainer width="100%" height={280}>
-        <BarChart data={chartData} margin={{top:isPipelineReport?8:5,right:8,left:-15,bottom:isPipelineReport?90:70}} onClick={handleChartClick} style={{cursor:"pointer"}}>
+      <ResponsiveContainer width="100%" height={300}>
+        <BarChart data={chartData} margin={{top:isPipelineReport?8:5,right:8,left:-15,bottom:isPipelineReport?90:70}} style={{cursor:"pointer"}}>
           <CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
           <XAxis dataKey={xk} {...ax} angle={-40} textAnchor="end" interval={0}/>
           <YAxis {...ax}/>
           <Tooltip {...tt}/>
           {barKeys.length>1&&<Legend verticalAlign="top" wrapperStyle={{fontFamily:"Inter,sans-serif",fontSize:10,color:T.muted,paddingBottom:8}}/>}
-          {barKeys.map((k,i)=><Bar key={k} dataKey={k} fill={(isPipelineReport?T.pipeline:T.chart)[i%(isPipelineReport?T.pipeline:T.chart).length]} stackId="s" radius={i===barKeys.length-1?[3,3,0,0]:[0,0,0,0]}/>)}
+          {barKeys.map((k,i)=><Bar key={k} dataKey={k} fill={(isPipelineReport?T.pipeline:T.chart)[i%(isPipelineReport?T.pipeline:T.chart).length]} stackId="s" radius={i===barKeys.length-1?[3,3,0,0]:[0,0,0,0]} style={{cursor:"pointer"}} onClick={(data, idx)=>handleBarClick(data, idx)}/>)}
         </BarChart>
       </ResponsiveContainer>
     );
@@ -621,8 +666,6 @@ xKey and yKeys must be exact column names from the dataset.`}]
   );
 
   // ─── RESULTS SCREEN ───────────────────────────────────────────────────────
-  const drillCols = drillDown ? Object.keys(drillDown.rows[0]||{}).slice(0,8) : [];
-
   return (
     <div style={{...base,display:"flex",flexDirection:"column"}}>
       <style>{`
@@ -640,7 +683,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
         .filter-sel:focus{border-color:${T.teal};box-shadow:0 0 0 3px ${T.tealLight};}
         .view-btn{padding:6px 16px;border-radius:8px;font-size:12px;font-weight:500;font-family:Inter,sans-serif;cursor:pointer;border:none;transition:all .15s;}
         ::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-thumb{background:${T.border2};border-radius:2px;}
-        @media(max-width:680px){.rg{grid-template-columns:1fr!important;}}
+        @media(max-width:900px){.rg-insights{grid-template-columns:1fr!important;}}
         .dr:hover td{background:${T.tealLight}!important;}
         input:focus,select:focus{border-color:${T.teal}!important;box-shadow:0 0 0 3px ${T.tealLight}!important;}
       `}</style>
@@ -668,12 +711,42 @@ xKey and yKeys must be exact column names from the dataset.`}]
         </div>
       </div>
 
-      <div style={{padding:"20px 24px 48px",maxWidth:1020,margin:"0 auto",width:"100%",boxSizing:"border-box"}}>
-        <h1 style={{fontSize:22,fontWeight:700,color:T.text,margin:"0 0 18px",letterSpacing:-0.45,textShadow:"0 1px 0 rgba(255,255,255,0.9)"}}>{analysis?.title}</h1>
+      <div style={{padding:"20px 24px 48px",maxWidth:1100,margin:"0 auto",width:"100%",boxSizing:"border-box"}}>
+        <h1 style={{fontSize:22,fontWeight:700,color:T.text,margin:"0 0 6px",letterSpacing:-0.45,textShadow:"0 1px 0 rgba(255,255,255,0.9)"}}>{analysis?.title}</h1>
+        <p style={{fontSize:13,color:T.muted,margin:"0 0 20px",lineHeight:1.5}}>
+          {isPipelineReport ? "Pipeline view — chart reflects your filters. Click a bar for row details." : "Click a bar to inspect the underlying rows."}
+        </p>
 
-        {/* Filters */}
-        {filterCols.length>0&&(
-          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:12,padding:"12px 16px",marginBottom:14,display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end",boxShadow:`${T.elev.sm}, ${T.elev.inset}`}}>
+        {/* Story first: brief + key signals */}
+        <div className="rg-insights" style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:18,marginBottom:20}}>
+          <div style={{...cardShell,display:"flex",flexDirection:"column",minHeight:0}}>
+            <div onClick={()=>setSummaryOpen(o=>!o)} style={{padding:"13px 18px 11px",borderBottom:summaryOpen?`1px solid ${T.border}`:"none",borderTop:`3px solid ${T.teal}`,display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",flexShrink:0}}>
+              <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>The Brief</span>
+              <span style={{fontSize:14,color:T.dim}}>{summaryOpen?"−":"+"}</span>
+            </div>
+            {summaryOpen&&<div style={{padding:"16px 18px",flex:1}}><p style={{fontSize:14,lineHeight:1.75,color:T.text,margin:0}}>{analysis?.narrative}</p></div>}
+          </div>
+          <div style={{...cardShell,display:"flex",flexDirection:"column",minHeight:0}}>
+            <div onClick={()=>setSignalsOpen(o=>!o)} style={{padding:"13px 18px 11px",borderBottom:signalsOpen?`1px solid ${T.border}`:"none",borderTop:`3px solid ${T.navy}`,display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",flexShrink:0}}>
+              <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>Key signals</span>
+              <span style={{fontSize:14,color:T.dim}}>{signalsOpen?"−":"+"}</span>
+            </div>
+            {signalsOpen&&<div style={{padding:"14px 18px"}}>
+              {analysis?.insights?.map((ins,i)=>(
+                <div key={i} style={{display:"flex",gap:10,marginBottom:i<analysis.insights.length-1?10:0,alignItems:"flex-start"}}>
+                  <div style={{width:20,height:20,background:i===0?T.tealLight:T.surface,border:`1px solid ${i===0?T.tealMid:T.border}`,borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>
+                    <span style={{fontSize:10,fontWeight:700,color:i===0?T.teal2:T.muted}}>{i+1}</span>
+                  </div>
+                  <div style={{fontSize:13,lineHeight:1.65,color:T.muted}}>{ins}</div>
+                </div>
+              ))}
+            </div>}
+          </div>
+        </div>
+
+        {/* Filters — directly above the chart they affect */}
+        {(filterCols.length>0||headers.length>0)&&(
+          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end",boxShadow:`${T.elev.sm}, ${T.elev.inset}`}}>
             <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase",marginRight:4,paddingBottom:2}}>Filters</span>
             {filterCols.map(col=>(
               <div key={col} style={{display:"flex",flexDirection:"column",gap:3}}>
@@ -690,111 +763,84 @@ xKey and yKeys must be exact column names from the dataset.`}]
                 Clear filters
               </button>
             )}
+            {filterCols.length===0&&(
+              <span style={{fontSize:12,color:T.dim,marginLeft:"auto"}}>No filterable columns detected (need 2+ values per column).</span>
+            )}
           </div>
         )}
 
-        {/* View toggle */}
-        <div style={{display:"flex",gap:2,marginBottom:14,background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:3,width:"fit-content",boxShadow:`${T.elev.sm}`}}>
-          {[["chart","Chart"],["cards","Summary"]].map(([m,l])=>(
-            <button key={m} className="view-btn" onClick={()=>setViewMode(m)}
-              style={{background:viewMode===m?T.card:"transparent",color:viewMode===m?T.text:T.muted,
-                boxShadow:viewMode===m?`${T.elev.sm}, 0 0 0 1px ${T.border}`:"none"}}>
-              {l}
-            </button>
-          ))}
-        </div>
-
-        <div className="rg" style={{display:"grid",gridTemplateColumns:"minmax(0,1.2fr) minmax(0,.8fr)",gap:18,marginBottom:14}}>
-          <div style={{...cardShell}}>
-            <div style={{padding:"13px 18px 11px",borderBottom:`1px solid ${T.border}`,borderTop:`3px solid ${T.navy}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-              <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>{viewMode==="chart"?"Visualization":"Summary"}</span>
-              {hasFilters&&<span style={{fontSize:11,color:T.teal2,fontWeight:500}}>Filtered view</span>}
+        {/* Chart or Summary cards */}
+        <div style={{...cardShell,marginBottom:18}}>
+          <div style={{padding:"10px 14px 10px",borderBottom:`1px solid ${T.border}`,borderTop:`3px solid ${T.navy}`,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+            <div style={{display:"flex",gap:2,background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:3}}>
+              {[["chart","Chart"],["cards","Summary"]].map(([m,l])=>(
+                <button key={m} type="button" className="view-btn" onClick={()=>setViewMode(m)}
+                  style={{background:viewMode===m?T.card:"transparent",color:viewMode===m?T.text:T.muted,
+                    boxShadow:viewMode===m?`${T.elev.sm}, 0 0 0 1px ${T.border}`:"none"}}>
+                  {l}
+                </button>
+              ))}
             </div>
-            {viewMode==="chart"?(
-              <div style={{padding:"14px 8px 8px",background:`linear-gradient(180deg, rgba(246,247,245,0.5) 0%, ${T.card} 28%)`}}>
-                {renderChart()}
-                {chartData.length>0&&<div style={{fontSize:11,color:T.dim,textAlign:"center",marginTop:4}}>Click any bar to see underlying rows</div>}
-              </div>
-            ):(
-              <div style={{padding:"14px 16px",display:"flex",flexDirection:"column",gap:10,maxHeight:400,overflowY:"auto"}}>
-                {summaryCards.length===0?<div style={{color:T.dim,fontSize:13,textAlign:"center",padding:"2rem"}}>No data</div>:
-                summaryCards.map((card,i)=>(
-                  <div key={i} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:"12px 14px",boxShadow:`${T.elev.sm}`,transition:"box-shadow .15s"}}>
-                    {isPipelineReport?(
-                      <>
-                        <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:10}}>
-                          <span style={{fontSize:13,fontWeight:600,color:T.navy}}>{card.label}</span>
-                          <span style={{fontSize:12,color:T.dim}}>{card.roleCount} role{card.roleCount!==1?"s":""}</span>
-                          <span style={{fontSize:12,fontWeight:600,color:T.teal2,marginLeft:"auto"}}>{card.total} total candidates</span>
-                        </div>
-                        <div style={{overflowX:"auto"}}>
-                          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                            <thead>
-                              <tr>
-                                {Object.keys(card.stageTotals).map(stage=>(
-                                  <th key={stage} style={{padding:"4px 10px",textAlign:"center",fontSize:10,fontWeight:600,color:T.muted,borderBottom:`1px solid ${T.border}`,whiteSpace:"nowrap",letterSpacing:"0.03em"}}>
-                                    {stage.replace("Recruiter Screen","Screen").replace("Hiring Manager Screen","HM Screen").replace("Virtual Interview","Virtual").replace("Onsite Interview","Onsite").replace("Final Round","Final")}
-                                  </th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              <tr>
-                                {Object.entries(card.stageTotals).map(([stage,count],si)=>(
-                                  <td key={stage} style={{padding:"6px 10px",textAlign:"center",fontWeight:600,fontSize:13,color:count>0?T.navy:T.dim,background:count>0?T.tealLight:"transparent",borderRadius:6}}>
-                                    {count||"—"}
-                                  </td>
-                                ))}
-                              </tr>
-                            </tbody>
-                          </table>
-                        </div>
-                      </>
-                    ):(
-                      <>
-                        <div style={{fontSize:13,fontWeight:600,color:T.navy,marginBottom:8}}>
-                          {card.recruiter} <span style={{color:T.dim,fontWeight:400,fontSize:12}}>· {card.total} req{card.total!==1?"s":""}</span>
-                        </div>
-                        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-                          {Object.entries(card.statuses).sort((a,b)=>b[1]-a[1]).map(([s,c])=>{
-                            const cm={"Open, actively recruiting":[T.tealLight,T.teal2],"Filled":[T.greenLight,T.green],"On Hold":[T.amberLight,T.amber],"Open, not actively recruiting":[T.surface,T.muted]};
-                            const [bg,fg]=cm[s]||[T.surface,T.muted];
-                            return <span key={s} style={{fontSize:11,fontWeight:500,background:bg,color:fg,border:`1px solid ${fg}33`,borderRadius:20,padding:"3px 10px"}}>{c} · {s}</span>;
-                          })}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+            {hasFilters&&viewMode==="chart"&&<span style={{fontSize:11,color:T.teal2,fontWeight:500}}>Filtered data</span>}
           </div>
-
-          <div style={{display:"flex",flexDirection:"column",gap:14}}>
-            <div style={{...cardShell,flex:1}}>
-              <div onClick={()=>setSummaryOpen(o=>!o)} style={{padding:"13px 18px 11px",borderBottom:summaryOpen?`1px solid ${T.border}`:"none",borderTop:`3px solid ${T.teal}`,display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
-                <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>The Brief</span>
-                <span style={{fontSize:14,color:T.dim}}>{summaryOpen?"−":"+"}</span>
-              </div>
-              {summaryOpen&&<div style={{padding:"16px 18px"}}><p style={{fontSize:13,lineHeight:1.75,color:T.text,margin:0}}>{analysis?.narrative}</p></div>}
+          {viewMode==="chart"?(
+            <div style={{padding:"14px 8px 8px",background:`linear-gradient(180deg, rgba(246,247,245,0.5) 0%, ${T.card} 28%)`}}>
+              {renderChart()}
+              {chartData.length>0&&<div style={{fontSize:11,color:T.dim,textAlign:"center",marginTop:4,paddingBottom:6}}>Click a bar to preview matching rows below</div>}
             </div>
-            <div style={{...cardShell}}>
-              <div onClick={()=>setSignalsOpen(o=>!o)} style={{padding:"13px 18px 11px",borderBottom:signalsOpen?`1px solid ${T.border}`:"none",borderTop:`3px solid ${T.navy}`,display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
-                <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>Key signals</span>
-                <span style={{fontSize:14,color:T.dim}}>{signalsOpen?"−":"+"}</span>
-              </div>
-              {signalsOpen&&<div style={{padding:"14px 18px"}}>
-                {analysis?.insights?.map((ins,i)=>(
-                  <div key={i} style={{display:"flex",gap:10,marginBottom:i<analysis.insights.length-1?10:0,alignItems:"flex-start"}}>
-                    <div style={{width:20,height:20,background:i===0?T.tealLight:T.surface,border:`1px solid ${i===0?T.tealMid:T.border}`,borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>
-                      <span style={{fontSize:10,fontWeight:700,color:i===0?T.teal2:T.muted}}>{i+1}</span>
-                    </div>
-                    <div style={{fontSize:12,lineHeight:1.65,color:T.muted}}>{ins}</div>
-                  </div>
-                ))}
-              </div>}
+          ):(
+            <div style={{padding:"14px 16px 18px",display:"flex",flexDirection:"column",gap:10,maxHeight:480,overflowY:"auto"}}>
+              {summaryCards.length===0?<div style={{color:T.dim,fontSize:13,textAlign:"center",padding:"2rem"}}>No summary for this dataset</div>:
+              summaryCards.map((card,i)=>(
+                <div key={i} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:"12px 14px",boxShadow:`${T.elev.sm}`}}>
+                  {isPipelineReport?(
+                    <>
+                      <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+                        <span style={{fontSize:13,fontWeight:600,color:T.navy}}>{card.label}</span>
+                        <span style={{fontSize:12,color:T.dim}}>{card.roleCount} role{card.roleCount!==1?"s":""}</span>
+                        <span style={{fontSize:12,fontWeight:600,color:T.teal2,marginLeft:"auto"}}>{card.total} total candidates</span>
+                      </div>
+                      <div style={{overflowX:"auto"}}>
+                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                          <thead>
+                            <tr>
+                              {Object.keys(card.stageTotals).map(stage=>(
+                                <th key={stage} style={{padding:"4px 8px",textAlign:"center",fontSize:10,fontWeight:600,color:T.muted,borderBottom:`1px solid ${T.border}`,whiteSpace:"nowrap"}}>
+                                  {stage.replace("Recruiter Screen","Screen").replace("Hiring Manager Screen","HM Screen").replace("Virtual Interview","Virtual").replace("Onsite Interview","Onsite").replace("Final Round","Final")}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              {Object.entries(card.stageTotals).map(([stage,count])=>(
+                                <td key={stage} style={{padding:"6px 8px",textAlign:"center",fontWeight:600,fontSize:13,color:count>0?T.navy:T.dim,background:count>0?T.tealLight:"transparent",borderRadius:6}}>
+                                  {count||"—"}
+                                </td>
+                              ))}
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  ):(
+                    <>
+                      <div style={{fontSize:13,fontWeight:600,color:T.navy,marginBottom:8}}>
+                        {card.recruiter} <span style={{color:T.dim,fontWeight:400,fontSize:12}}>· {card.total} req{card.total!==1?"s":""}</span>
+                      </div>
+                      <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                        {Object.entries(card.statuses).sort((a,b)=>b[1]-a[1]).map(([s,c])=>{
+                          const cm={"Open, actively recruiting":[T.tealLight,T.teal2],"Filled":[T.greenLight,T.green],"On Hold":[T.amberLight,T.amber],"Open, not actively recruiting":[T.surface,T.muted]};
+                          const [bg,fg]=cm[s]||[T.surface,T.muted];
+                          return <span key={s} style={{fontSize:11,fontWeight:500,background:bg,color:fg,border:`1px solid ${fg}33`,borderRadius:20,padding:"3px 10px"}}>{c} · {s}</span>;
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
             </div>
-          </div>
+          )}
         </div>
 
         {/* Drill-down */}
@@ -807,15 +853,23 @@ xKey and yKeys must be exact column names from the dataset.`}]
               </div>
               <button onClick={()=>setDrillDown(null)} style={{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"5px 12px",cursor:"pointer",fontFamily:"Inter,sans-serif",fontSize:12}}>✕ Close</button>
             </div>
-            <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr style={{background:T.surface}}>{drillCols.map(c=><th key={c} style={{padding:"8px 14px",textAlign:"left",fontWeight:600,color:T.muted,borderBottom:`1px solid ${T.border}`,whiteSpace:"nowrap",fontSize:11}}>{c}</th>)}</tr></thead>
-                <tbody>{drillDown.rows.slice(0,25).map((row,i)=>(
-                  <tr key={i} className="dr" style={{borderBottom:`1px solid ${T.border}`}}>
-                    {drillCols.map(c=><td key={c} style={{padding:"8px 14px",color:T.text,whiteSpace:"nowrap",background:"transparent",transition:"background .1s"}}>{String(row[c]??"—")}</td>)}
-                  </tr>
-                ))}</tbody>
-              </table>
+            <div style={{overflowX:"auto",minHeight:drillTableCols.length?undefined:48}}>
+              {drillTableCols.length>0?(
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr style={{background:T.surface}}>{drillTableCols.map(c=><th key={c} style={{padding:"8px 14px",textAlign:"left",fontWeight:600,color:T.muted,borderBottom:`1px solid ${T.border}`,whiteSpace:"nowrap",fontSize:11}}>{c}</th>)}</tr></thead>
+                  <tbody>{drillDown.rows.slice(0,25).map((row,i)=>(
+                    <tr key={i} className="dr" style={{borderBottom:`1px solid ${T.border}`}}>
+                      {drillTableCols.map(c=><td key={c} style={{padding:"8px 14px",color:T.text,whiteSpace:"nowrap",maxWidth:280,overflow:"hidden",textOverflow:"ellipsis",background:"transparent",transition:"background .1s"}} title={String(row[c]??"")}>{String(row[c]??"—")}</td>)}
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ):(
+                <div style={{padding:"16px 18px",fontSize:13,color:T.text,lineHeight:1.6}}>
+                  {drillDown.rows[0]&&typeof drillDown.rows[0]==="object"?Object.entries(drillDown.rows[0]).map(([k,v])=>(
+                    <div key={k} style={{display:"flex",gap:8,marginBottom:6}}><span style={{color:T.muted,flexShrink:0}}>{k}</span><span>{String(v??"—")}</span></div>
+                  )):<span style={{color:T.dim}}>No row fields found.</span>}
+                </div>
+              )}
               {drillDown.rows.length>25&&<div style={{padding:"10px 18px",fontSize:12,color:T.dim,borderTop:`1px solid ${T.border}`}}>Showing 25 of {drillDown.rows.length} rows</div>}
             </div>
           </div>
