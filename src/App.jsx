@@ -273,6 +273,9 @@ export default function Signal() {
   const [summaryOpen, setSummaryOpen] = useState(true);
   const [signalsOpen, setSignalsOpen] = useState(true);
   const [viewMode, setViewMode] = useState("chart");
+  const [vizView, setVizView] = useState("bar");
+  const [donutGroupBy, setDonutGroupBy] = useState("recruiter");
+  const [tableSort, setTableSort] = useState({ key: null, dir: "asc" });
 
   const fileRef = useRef();
   const chatEndRef = useRef();
@@ -426,6 +429,110 @@ export default function Signal() {
     return Object.values(groups).sort((a,b)=>b.Count-a.Count).slice(0,20);
   },[filteredData, analysis, chartXKey, isPipelineReport, pipelineNumericCols]);
 
+  const recruiterColH = useMemo(() => headers.find(isRecruiterCol), [headers]);
+  const statusColH = useMemo(() => headers.find(isStatusCol), [headers]);
+  const deptColH = useMemo(() => headers.find(h => isDeptCol(h) && h !== recruiterColH), [headers, recruiterColH]);
+
+  const donutDataPack = useMemo(() => {
+    if (!analysis || !filteredData.length) return { data: [], groupKey: null, dimensionLabel: "" };
+    const rec = recruiterColH;
+    const status = statusColH;
+    const wantRec = donutGroupBy === "recruiter" && rec;
+    const wantStatus = donutGroupBy === "status" && status;
+    let groupKey = null;
+    let dimensionLabel = "";
+    if (wantRec) {
+      groupKey = rec;
+      dimensionLabel = "Recruiter";
+    } else if (wantStatus || (!wantRec && status)) {
+      groupKey = status;
+      dimensionLabel = "Status";
+    } else if (rec) {
+      groupKey = rec;
+      dimensionLabel = "Recruiter";
+    } else if (status) {
+      groupKey = status;
+      dimensionLabel = "Status";
+    } else {
+      const xk = chartXKey;
+      if (!xk || !chartData.length) return { data: [], groupKey: null, dimensionLabel: "" };
+      const data = chartData.map((row) => {
+        const name = String(row[xk] ?? "");
+        let value = 0;
+        if (isPipelineReport && pipelineNumericCols.length) {
+          pipelineNumericCols.forEach((c) => { value += Number(row[shortStage(c)]) || 0; });
+        } else {
+          value = Number(row.Count) || 0;
+        }
+        return { name, value };
+      }).filter((d) => d.value > 0).sort((a, b) => b.value - a.value);
+      return { data, groupKey: xk, dimensionLabel: String(xk).replace(/Primary /i, "") };
+    }
+    const counts = {};
+    filteredData.forEach((row) => {
+      const raw = groupKey ? row[groupKey] : "";
+      const key = isStatusCol(groupKey) ? normalizeStatus(String(raw ?? "")) : String(raw ?? "Unknown");
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    const data = Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+    return { data, groupKey, dimensionLabel };
+  }, [analysis, filteredData, chartData, chartXKey, isPipelineReport, pipelineNumericCols, recruiterColH, statusColH, donutGroupBy]);
+
+  const heatmapData = useMemo(() => {
+    if (!filteredData.length) return null;
+    const rec = recruiterColH || deptColH;
+    const status = statusColH;
+    if (rec && status) {
+      const recruiters = [...new Set(filteredData.map((r) => String(r[rec] || "Unknown")))].sort();
+      const statuses = [...new Set(filteredData.map((r) => normalizeStatus(String(r[status] ?? ""))))].sort();
+      const counts = {};
+      let max = 0;
+      filteredData.forEach((row) => {
+        const rr = String(row[rec] || "Unknown");
+        const ss = normalizeStatus(String(row[status] ?? ""));
+        const k = `${rr}\0${ss}`;
+        counts[k] = (counts[k] || 0) + 1;
+        max = Math.max(max, counts[k]);
+      });
+      return { type: "rec-status", recCol: rec, statusCol: status, recruiters, statuses, counts, max };
+    }
+    if (isPipelineReport && pipelineNumericCols.length && rec) {
+      const recruiters = [...new Set(filteredData.map((r) => String(r[rec] || "Unknown")))].sort();
+      const stages = pipelineNumericCols.map((c) => shortStage(c));
+      const counts = {};
+      let max = 0;
+      filteredData.forEach((row) => {
+        const rr = String(row[rec] || "Unknown");
+        pipelineNumericCols.forEach((c) => {
+          const ss = shortStage(c);
+          const k = `${rr}\0${ss}`;
+          const v = Number(row[c]) || 0;
+          counts[k] = (counts[k] || 0) + v;
+          max = Math.max(max, counts[k]);
+        });
+      });
+      return { type: "rec-stage", recCol: rec, stageCols: pipelineNumericCols, recruiters, statuses: stages, counts, max };
+    }
+    return null;
+  }, [filteredData, recruiterColH, deptColH, statusColH, isPipelineReport, pipelineNumericCols]);
+
+  const sortedTableRows = useMemo(() => {
+    if (!tableSort.key) return filteredData;
+    const k = tableSort.key;
+    const dir = tableSort.dir === "asc" ? 1 : -1;
+    const rows = [...filteredData];
+    rows.sort((a, b) => {
+      const va = a[k];
+      const vb = b[k];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+      return String(va).localeCompare(String(vb), undefined, { numeric: true }) * dir;
+    });
+    return rows;
+  }, [filteredData, tableSort]);
+
   // ─── DERIVED: summary cards ───────────────────────────────────────────────
   const summaryCards = useMemo(()=>{
     if (!analysis||!filteredData.length) return [];
@@ -515,6 +622,7 @@ export default function Signal() {
   const resetAll = () => {
     setActiveFilters({}); setDrillDown(null); setDrawerOpen(false);
     setSummaryOpen(true); setSignalsOpen(true); setViewMode("chart");
+    setVizView("bar"); setDonutGroupBy("recruiter"); setTableSort({ key: null, dir: "asc" });
   };
 
   const closeDrawer = () => setDrawerOpen(false);
@@ -611,20 +719,62 @@ xKey and yKeys must be exact column names from the dataset.`}]
     setAsking(false);
   };
 
-  const handleChartClick = (payload, _idx, event) => {
-    if (!analysis) return;
-    const label = payload?.activeLabel||payload?.activePayload?.[0]?.payload?.[chartXKey]||payload?.name;
-    if (!label) return;
-    const xk = chartXKey;
-    const rows = filteredData.filter(r=>{
-      const val = isStatusCol(xk)?normalizeStatus(String(r[xk]||"")):String(r[xk]||"");
-      return val===String(label);
+  const openDrillForColumn = (xk, label) => {
+    if (!xk || label == null || label === "") return;
+    const rows = filteredData.filter((r) => {
+      const val = isStatusCol(xk) ? normalizeStatus(String(r[xk] ?? "")) : String(r[xk] ?? "");
+      return val === String(label);
     });
     if (rows.length) {
-      setDrillDown({label,rows,isRecruiter:isRecruiterCol(xk)||isDeptCol(xk)});
+      setDrillDown({ label, rows, isRecruiter: isRecruiterCol(xk) || isDeptCol(xk) });
       setDrawerOpen(true);
       setDrawerFetchKey((k) => k + 1);
     }
+  };
+
+  const handleChartClick = (payload) => {
+    if (!analysis) return;
+    const label = payload?.activeLabel || payload?.activePayload?.[0]?.payload?.[chartXKey] || payload?.name;
+    if (!label) return;
+    openDrillForColumn(chartXKey, label);
+  };
+
+  const handlePieClick = (slice) => {
+    if (!analysis || !donutDataPack.groupKey) return;
+    const name = slice?.name ?? slice?.payload?.name;
+    if (name == null || name === "") return;
+    openDrillForColumn(donutDataPack.groupKey, name);
+  };
+
+  const handleHeatmapCellClick = (rowLabel, colLabel) => {
+    if (!heatmapData || !analysis) return;
+    if (heatmapData.type === "rec-status") {
+      const { recCol, statusCol } = heatmapData;
+      const rows = filteredData.filter((r) => String(r[recCol] || "Unknown") === rowLabel
+        && normalizeStatus(String(r[statusCol] ?? "")) === colLabel);
+      if (rows.length) {
+        setDrillDown({ label: `${rowLabel} · ${colLabel}`, rows, isRecruiter: true });
+        setDrawerOpen(true);
+        setDrawerFetchKey((k) => k + 1);
+      }
+    } else if (heatmapData.type === "rec-stage") {
+      const { recCol, stageCols } = heatmapData;
+      const col = stageCols.find((c) => shortStage(c) === colLabel);
+      if (!col) return;
+      const rows = filteredData.filter((r) => String(r[recCol] || "Unknown") === rowLabel && (Number(r[col]) || 0) > 0);
+      if (rows.length) {
+        setDrillDown({ label: `${rowLabel} · ${colLabel}`, rows, isRecruiter: true });
+        setDrawerOpen(true);
+        setDrawerFetchKey((k) => k + 1);
+      }
+    }
+  };
+
+  const toggleTableSort = (key) => {
+    setTableSort((prev) => {
+      if (prev.key !== key) return { key, dir: "asc" };
+      return { key, dir: prev.dir === "asc" ? "desc" : "asc" };
+    });
   };
 
   const renderChart = () => {
@@ -644,6 +794,239 @@ xKey and yKeys must be exact column names from the dataset.`}]
           {barKeys.map((k,i)=><Bar key={k} dataKey={k} fill={(isPipelineReport?T.pipeline:T.chart)[i%(isPipelineReport?T.pipeline:T.chart).length]} stackId="s" radius={i===barKeys.length-1?[3,3,0,0]:[0,0,0,0]}/>)}
         </BarChart>
       </ResponsiveContainer>
+    );
+  };
+
+  const renderDonut = () => {
+    const { data, dimensionLabel } = donutDataPack;
+    if (!data.length) {
+      return <div style={{ padding: "2rem", textAlign: "center", color: T.dim, fontSize: 13 }}>No data for current filters</div>;
+    }
+    return (
+      <div>
+        {recruiterColH && statusColH && (
+          <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 10 }}>
+            {[
+              ["recruiter", "By recruiter"],
+              ["status", "By status"],
+            ].map(([val, lab]) => (
+              <button
+                key={val}
+                type="button"
+                onClick={() => setDonutGroupBy(val)}
+                style={{
+                  background: donutGroupBy === val ? T.navy : T.surface,
+                  color: donutGroupBy === val ? "#fff" : T.muted,
+                  border: `1px solid ${donutGroupBy === val ? T.navy : T.border}`,
+                  borderRadius: 999,
+                  padding: "4px 12px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "Inter,sans-serif",
+                }}
+              >
+                {lab}
+              </button>
+            ))}
+          </div>
+        )}
+        <div style={{ fontSize: 11, color: T.dim, textAlign: "center", marginBottom: 6 }}>{dimensionLabel} · {data.reduce((s, d) => s + d.value, 0)} total</div>
+        <ResponsiveContainer width="100%" height={260}>
+          <PieChart>
+            <Tooltip contentStyle={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 12 }} />
+            <Pie
+              data={data}
+              dataKey="value"
+              nameKey="name"
+              cx="50%"
+              cy="50%"
+              innerRadius={64}
+              outerRadius={96}
+              paddingAngle={2}
+              onClick={(d) => handlePieClick(d)}
+              cursor="pointer"
+            >
+              {data.map((_, i) => (
+                <Cell key={i} fill={T.chart[i % T.chart.length]} stroke={T.card} strokeWidth={1} />
+              ))}
+            </Pie>
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  };
+
+  const renderHeatmap = () => {
+    if (!heatmapData) {
+      return (
+        <div style={{ padding: "2rem", textAlign: "center", color: T.dim, fontSize: 13, lineHeight: 1.6 }}>
+          Heatmap needs a recruiter (or department) column and a status column. Pipeline reports can use recruiter × stage instead when status is missing.
+        </div>
+      );
+    }
+    const { recruiters, statuses, counts, max } = heatmapData;
+    const colW = Math.max(56, Math.min(88, Math.floor(520 / Math.max(statuses.length, 1))));
+    return (
+      <div style={{ overflowX: "auto", paddingBottom: 4 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: `minmax(120px, 160px) repeat(${statuses.length}, ${colW}px)`,
+            gap: 0,
+            minWidth: 160 + statuses.length * colW,
+            border: `1px solid ${T.border}`,
+            borderRadius: 10,
+            overflow: "hidden",
+            fontSize: 11,
+          }}
+        >
+          <div style={{ background: T.navy, color: "#fff", padding: "8px 10px", fontWeight: 600, display: "flex", alignItems: "center" }} />
+          {statuses.map((s) => (
+            <div
+              key={s}
+              title={s}
+              style={{
+                background: T.navy,
+                color: "#fff",
+                padding: "8px 6px",
+                fontWeight: 600,
+                textAlign: "center",
+                borderLeft: `1px solid ${T.navy2}`,
+                lineHeight: 1.25,
+                maxHeight: 56,
+                overflow: "hidden",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <span style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{s}</span>
+            </div>
+          ))}
+          {recruiters.map((r) => (
+            <div key={`row-${r}`} style={{ display: "contents" }}>
+              <div
+                style={{
+                  background: T.surface,
+                  padding: "8px 10px",
+                  fontWeight: 600,
+                  color: T.navy,
+                  borderTop: `1px solid ${T.border}`,
+                  display: "flex",
+                  alignItems: "center",
+                  lineHeight: 1.25,
+                }}
+              >
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{r}</span>
+              </div>
+              {statuses.map((s) => {
+                const n = counts[`${r}\0${s}`] || 0;
+                const t = max > 0 ? n / max : 0;
+                const bg = n === 0 ? T.bg : `rgba(26, 0, 102, ${0.1 + t * 0.78})`;
+                const fg = t > 0.45 ? "#fff" : T.text;
+                return (
+                  <button
+                    key={`${r}-${s}`}
+                    type="button"
+                    onClick={() => handleHeatmapCellClick(r, s)}
+                    disabled={n === 0}
+                    style={{
+                      background: bg,
+                      color: fg,
+                      border: "none",
+                      borderTop: `1px solid ${T.border}`,
+                      borderLeft: `1px solid ${T.border}`,
+                      padding: "10px 4px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: n ? "pointer" : "default",
+                      fontFamily: "Inter,sans-serif",
+                      transition: "background .15s",
+                      opacity: n ? 1 : 0.55,
+                    }}
+                  >
+                    {n || "—"}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: T.dim, marginTop: 8, textAlign: "center" }}>Darker = higher count · Click a non-zero cell to drill down</div>
+      </div>
+    );
+  };
+
+  const renderTable = () => {
+    if (!filteredData.length) {
+      return <div style={{ padding: "2rem", textAlign: "center", color: T.dim, fontSize: 13 }}>No rows for current filters</div>;
+    }
+    const cols = headers.length ? headers : Object.keys(filteredData[0] || {});
+    if (!cols.length) {
+      return <div style={{ padding: "2rem", textAlign: "center", color: T.dim, fontSize: 13 }}>No columns</div>;
+    }
+    return (
+      <div style={{ maxHeight: 420, overflow: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: `repeat(${cols.length}, minmax(96px, 1fr))`,
+            minWidth: cols.length * 110,
+            fontSize: 12,
+          }}
+        >
+          {cols.map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => toggleTableSort(c)}
+              style={{
+                position: "sticky",
+                top: 0,
+                zIndex: 1,
+                background: T.navy,
+                color: "#fff",
+                border: "none",
+                borderRight: `1px solid ${T.navy2}`,
+                borderBottom: `1px solid ${T.border}`,
+                padding: "10px 8px",
+                textAlign: "left",
+                fontWeight: 600,
+                fontFamily: "Inter,sans-serif",
+                fontSize: 11,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {c.replace(/Primary /i, "")}
+              {tableSort.key === c ? (tableSort.dir === "asc" ? " ↑" : " ↓") : ""}
+            </button>
+          ))}
+          {sortedTableRows.map((row, ri) => (
+            <div key={ri} style={{ display: "contents" }}>
+              {cols.map((c) => (
+                <div
+                  key={c}
+                  style={{
+                    padding: "8px 8px",
+                    borderRight: `1px solid ${T.border}`,
+                    borderBottom: `1px solid ${T.border}`,
+                    background: ri % 2 === 0 ? T.card : T.surface,
+                    color: T.text,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={String(row[c] ?? "")}
+                >
+                  {String(row[c] ?? "—")}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
     );
   };
 
@@ -749,6 +1132,11 @@ xKey and yKeys must be exact column names from the dataset.`}]
         @keyframes wb{0%,100%{height:4px;opacity:.2}50%{height:18px;opacity:1}}
         @keyframes su{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
         @keyframes drawerSlideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
+        @keyframes vizFadeIn{from{opacity:0}to{opacity:1}}
+        .viz-fade{animation:vizFadeIn .28s ease-out}
+        .viz-pill{font-family:Inter,sans-serif;font-size:12px;font-weight:600;padding:7px 14px;border-radius:999px;border:1px solid ${T.border};cursor:pointer;transition:background .15s,color .15s,border-color .15s,box-shadow .15s;background:transparent;color:${T.muted};}
+        .viz-pill:hover{color:${T.text};border-color:${T.tealMid};background:${T.tealLight};}
+        .viz-pill-on{background:${T.navy}!important;color:#fff!important;border-color:${T.navy}!important;box-shadow:0 1px 3px rgba(26,0,102,.2);}
         .drawer-panel-anim{animation:drawerSlideIn .38s cubic-bezier(.22,1,.36,1) forwards}
         .drawer-x:hover{background:rgba(255,255,255,.12)!important;color:#fff!important;}
         .sq-chip{background:${T.card};border:1px solid ${T.border};color:${T.muted};border-radius:20px;padding:5px 14px;cursor:pointer;font-family:Inter,sans-serif;font-size:12px;font-weight:500;transition:all .15s;}
@@ -833,8 +1221,41 @@ xKey and yKeys must be exact column names from the dataset.`}]
             </div>
             {viewMode==="chart"?(
               <div style={{padding:"14px 8px 8px"}}>
-                {renderChart()}
-                {chartData.length>0&&<div style={{fontSize:11,color:T.dim,textAlign:"center",marginTop:4}}>Click any bar for details and a drill-down below</div>}
+                <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:14,justifyContent:"center"}}>
+                  {[
+                    ["bar","Bar chart"],
+                    ["donut","Donut chart"],
+                    ["heatmap","Heatmap"],
+                    ["table","Table view"],
+                  ].map(([v, lab]) => (
+                    <button
+                      key={v}
+                      type="button"
+                      className={`viz-pill${vizView === v ? " viz-pill-on" : ""}`}
+                      onClick={() => setVizView(v)}
+                    >
+                      {lab}
+                    </button>
+                  ))}
+                </div>
+                <div key={vizView} className="viz-fade" style={{ minHeight: vizView === "table" ? 360 : vizView === "heatmap" ? 300 : 280 }}>
+                  {vizView === "bar" && renderChart()}
+                  {vizView === "donut" && renderDonut()}
+                  {vizView === "heatmap" && renderHeatmap()}
+                  {vizView === "table" && renderTable()}
+                </div>
+                {vizView === "bar" && chartData.length > 0 && (
+                  <div style={{ fontSize: 11, color: T.dim, textAlign: "center", marginTop: 8 }}>Click any bar for details and a drill-down below</div>
+                )}
+                {vizView === "donut" && donutDataPack.data.length > 0 && (
+                  <div style={{ fontSize: 11, color: T.dim, textAlign: "center", marginTop: 8 }}>Click a slice to drill down</div>
+                )}
+                {vizView === "heatmap" && heatmapData && (
+                  <div style={{ fontSize: 11, color: T.dim, textAlign: "center", marginTop: 8 }}>Click a cell with count to drill down</div>
+                )}
+                {vizView === "table" && filteredData.length > 0 && (
+                  <div style={{ fontSize: 11, color: T.dim, textAlign: "center", marginTop: 8 }}>{filteredData.length} row{filteredData.length !== 1 ? "s" : ""} · Click column headers to sort</div>
+                )}
               </div>
             ):(
               <div style={{padding:"14px 16px",display:"flex",flexDirection:"column",gap:10,maxHeight:400,overflowY:"auto"}}>
