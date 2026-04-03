@@ -25,6 +25,37 @@ function isStatusCol(h) { return /update|status|state|disposition/i.test(h); }
 function isRecruiterCol(h) { return /^recruiter$|primary.rec|sourcer|ta.partner|hiring.partner/i.test(h); }
 function isDeptCol(h) { return /department|dept|division|department.head|business.unit/i.test(h); }
 function isRoleCol(h) { return /job.req|requisition|position|role|title/i.test(h); }
+function findOpenDateCol(keys) {
+  return keys.find(h => /open.*date|date.*open|created|posted|req.*date|start\s*date|date\s*opened|open\s*since/i.test(h));
+}
+function findLocationCol(keys) {
+  return keys.find(h => /location|city|office|site|region/i.test(h) && !/time|zone/i.test(h));
+}
+function findHMCol(keys) {
+  return keys.find(h => /hiring\s*manager|hiring\.manager|hm\s*name|hiring\s*mgr|manager\s*name/i.test(h));
+}
+function parseCellDate(v) {
+  if (v==null||v==="") return null;
+  if (typeof v==="number" && v>30000 && v<60000) {
+    const utc = new Date((v - 25569) * 86400 * 1000);
+    return isNaN(utc.getTime()) ? null : utc;
+  }
+  if (typeof v==="number") {
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(String(v));
+  return isNaN(d.getTime()) ? null : d;
+}
+function statusBadgeMeta(raw) {
+  const s = String(raw ?? "").toLowerCase();
+  if (/frozen/.test(s)) return { bg: T.surface, fg: T.dim, border: T.border2, label: String(raw || "Frozen").trim() || "Frozen" };
+  if (/on hold|hold/.test(s) && !/active/.test(s)) return { bg: T.amberLight, fg: T.amber, border: T.amber, label: "On Hold" };
+  if (/filled|closed|complete/.test(s)) return { bg: T.greenLight, fg: T.green, border: T.green, label: "Filled" };
+  if (/active|open.*act|actively/.test(s)) return { bg: T.tealLight, fg: T.teal2, border: T.teal2, label: "Active" };
+  if (/not act|passive/.test(s)) return { bg: T.surface, fg: T.muted, border: T.border, label: "Open" };
+  return { bg: T.surface, fg: T.muted, border: T.border, label: String(raw || "—").trim() || "—" };
+}
 function isNumericCol(vals) { return vals.length > 0 && vals.filter(v=>typeof v==="number").length/vals.length > 0.75; }
 function isTotalCol(h) { return /total|sum|grand/i.test(h); }
 function shortStage(s) {
@@ -235,6 +266,10 @@ export default function Signal() {
   const [procMsg, setProcMsg] = useState("Reading your data...");
   const [activeFilters, setActiveFilters] = useState({});
   const [drillDown, setDrillDown] = useState(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerFetchKey, setDrawerFetchKey] = useState(0);
+  const [drawerAi, setDrawerAi] = useState("");
+  const [drawerAiLoading, setDrawerAiLoading] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(true);
   const [signalsOpen, setSignalsOpen] = useState(true);
   const [viewMode, setViewMode] = useState("chart");
@@ -253,6 +288,46 @@ export default function Signal() {
     p.onload=()=>{window._jsPDF=window.jspdf;}; document.head.appendChild(p);
   },[]);
   useEffect(()=>{chatEndRef.current?.scrollIntoView({behavior:"smooth"});},[chatMsgs]);
+  useEffect(() => {
+    if (!drawerOpen) {
+      document.body.style.overflow = "";
+      return;
+    }
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, [drawerOpen]);
+  useEffect(() => {
+    if (!drawerOpen || !drillDown?.rows?.length) return;
+    let cancelled = false;
+    setDrawerAi("");
+    setDrawerAiLoading(true);
+    const sample = drillDown.rows.slice(0, 45);
+    const keys = Object.keys(sample[0] || {});
+    const prompt = `You are a talent analytics expert. In exactly 2–3 sentences, summarize this slice of the pipeline for "${drillDown.label}". Say what is notable and what most needs attention; cite specific numbers from the data. Plain text only, no markdown, no bullet points.\n\nColumns: ${keys.join(", ")}\nRows (${drillDown.rows.length} total, sample below):\n${JSON.stringify(sample)}`;
+    fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 320,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        if (d?.error) { setDrawerAi("Could not load AI summary."); return; }
+        const text = d?.content?.[0]?.text?.trim() || "Could not generate a summary.";
+        setDrawerAi(text);
+      })
+      .catch(() => {
+        if (!cancelled) setDrawerAi("Could not load AI summary — try again.");
+      })
+      .finally(() => {
+        if (!cancelled) setDrawerAiLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [drawerOpen, drawerFetchKey, drillDown?.label]);
 
   // ─── DERIVED: report type detection ──────────────────────────────────────
   const pipelineNumericCols = useMemo(()=>{
@@ -384,6 +459,50 @@ export default function Signal() {
     });
   },[filteredData,analysis,headers,isPipelineReport,pipelineNumericCols]);
 
+  const drawerDetail = useMemo(() => {
+    if (!drillDown?.rows?.length) return null;
+    const rows = drillDown.rows;
+    const keys = Object.keys(rows[0] || {});
+    const statusCol = keys.find(isStatusCol);
+    const dateCol = findOpenDateCol(keys);
+    const roleCol = keys.find(isRoleCol);
+    const locCol = findLocationCol(keys);
+    const hmCol = findHMCol(keys);
+    const isFilledRow = (r) => statusCol && /filled/i.test(String(r[statusCol] ?? ""));
+    const openRows = statusCol ? rows.filter((r) => !isFilledRow(r)) : rows;
+    const totalOpenReqs = openRows.length;
+    let avgDaysOpen = null;
+    if (dateCol) {
+      const now = Date.now();
+      const days = [];
+      for (const r of openRows) {
+        const dt = parseCellDate(r[dateCol]);
+        if (dt) days.push(Math.max(0, (now - dt.getTime()) / 86400000));
+      }
+      if (days.length) avgDaysOpen = days.reduce((a, b) => a + b, 0) / days.length;
+    }
+    const statusBreakdown = {};
+    if (statusCol) {
+      rows.forEach((r) => {
+        const s = normalizeStatus(String(r[statusCol] ?? ""));
+        statusBreakdown[s] = (statusBreakdown[s] || 0) + 1;
+      });
+    }
+    const roleCards = rows.map((row, i) => {
+      const title = roleCol
+        ? String(row[roleCol] ?? "—")
+        : String(row[keys[0]] ?? `Row ${i + 1}`);
+      return {
+        i,
+        title,
+        location: locCol ? String(row[locCol] ?? "") : "",
+        statusRaw: statusCol ? row[statusCol] : "",
+        hm: hmCol ? String(row[hmCol] ?? "") : "",
+      };
+    });
+    return { totalOpenReqs, avgDaysOpen, dateCol, statusBreakdown, statusCol, roleCards, roleCol, locCol, hmCol };
+  }, [drillDown]);
+
   // ─── PROCESSING ───────────────────────────────────────────────────────────
   const startProc = () => {
     const msgs=["Reading your data...","Cleaning the report...","Finding the signal...","Building your brief..."];
@@ -394,9 +513,11 @@ export default function Signal() {
   const stopProc = () => clearInterval(procInterval.current);
 
   const resetAll = () => {
-    setActiveFilters({}); setDrillDown(null);
+    setActiveFilters({}); setDrillDown(null); setDrawerOpen(false);
     setSummaryOpen(true); setSignalsOpen(true); setViewMode("chart");
   };
+
+  const closeDrawer = () => setDrawerOpen(false);
 
   const run = async (hdrs, rows, name) => {
     setHeaders(hdrs); setData(rows); setFileName(name);
@@ -494,13 +615,16 @@ xKey and yKeys must be exact column names from the dataset.`}]
     if (!analysis) return;
     const label = payload?.activeLabel||payload?.activePayload?.[0]?.payload?.[chartXKey]||payload?.name;
     if (!label) return;
-    setDrillDown(null);
     const xk = chartXKey;
     const rows = filteredData.filter(r=>{
       const val = isStatusCol(xk)?normalizeStatus(String(r[xk]||"")):String(r[xk]||"");
       return val===String(label);
     });
-    if (rows.length) setDrillDown({label,rows,isRecruiter:isRecruiterCol(xk)||isDeptCol(xk)});
+    if (rows.length) {
+      setDrillDown({label,rows,isRecruiter:isRecruiterCol(xk)||isDeptCol(xk)});
+      setDrawerOpen(true);
+      setDrawerFetchKey((k) => k + 1);
+    }
   };
 
   const renderChart = () => {
@@ -624,6 +748,9 @@ xKey and yKeys must be exact column names from the dataset.`}]
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         @keyframes wb{0%,100%{height:4px;opacity:.2}50%{height:18px;opacity:1}}
         @keyframes su{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes drawerSlideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
+        .drawer-panel-anim{animation:drawerSlideIn .38s cubic-bezier(.22,1,.36,1) forwards}
+        .drawer-x:hover{background:rgba(255,255,255,.12)!important;color:#fff!important;}
         .sq-chip{background:${T.card};border:1px solid ${T.border};color:${T.muted};border-radius:20px;padding:5px 14px;cursor:pointer;font-family:Inter,sans-serif;font-size:12px;font-weight:500;transition:all .15s;}
         .sq-chip:hover{border-color:${T.tealMid};color:${T.text};background:${T.tealLight};}
         .back-btn:hover{background:${T.surface}!important;color:${T.text}!important;}
@@ -672,14 +799,14 @@ xKey and yKeys must be exact column names from the dataset.`}]
             {filterCols.map(col=>(
               <div key={col} style={{display:"flex",flexDirection:"column",gap:3}}>
                 <label style={{fontSize:10,color:T.dim,fontWeight:500}}>{col.replace(/Primary /i,"")}</label>
-                <select className="filter-sel" value={activeFilters[col]||""} onChange={e=>{setActiveFilters(p=>({...p,[col]:e.target.value}));setDrillDown(null);}}>
+                <select className="filter-sel" value={activeFilters[col]||""} onChange={e=>{setActiveFilters(p=>({...p,[col]:e.target.value}));setDrillDown(null);setDrawerOpen(false);}}>
                   <option value="">All</option>
                   {uniqueVals(data,col).map(v=><option key={v} value={v}>{v}</option>)}
                 </select>
               </div>
             ))}
             {hasFilters&&(
-              <button onClick={()=>{setActiveFilters({});setDrillDown(null);}}
+              <button onClick={()=>{setActiveFilters({});setDrillDown(null);setDrawerOpen(false);}}
                 style={{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"6px 12px",cursor:"pointer",fontFamily:"Inter,sans-serif",fontSize:12,fontWeight:500,marginLeft:"auto",transition:"all .15s"}}>
                 Clear filters
               </button>
@@ -707,7 +834,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
             {viewMode==="chart"?(
               <div style={{padding:"14px 8px 8px"}}>
                 {renderChart()}
-                {chartData.length>0&&<div style={{fontSize:11,color:T.dim,textAlign:"center",marginTop:4}}>Click any bar to see underlying rows</div>}
+                {chartData.length>0&&<div style={{fontSize:11,color:T.dim,textAlign:"center",marginTop:4}}>Click any bar for details and a drill-down below</div>}
               </div>
             ):(
               <div style={{padding:"14px 16px",display:"flex",flexDirection:"column",gap:10,maxHeight:400,overflowY:"auto"}}>
@@ -799,7 +926,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
                 <div style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>{drillDown.isRecruiter?"Recruiter brief":"Drill-down"}</div>
                 <div style={{fontSize:13,fontWeight:600,color:T.navy,marginTop:2}}>{drillDown.label} <span style={{color:T.dim,fontWeight:400}}>· {drillDown.rows.length} row{drillDown.rows.length!==1?"s":""}</span></div>
               </div>
-              <button onClick={()=>setDrillDown(null)} style={{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"5px 12px",cursor:"pointer",fontFamily:"Inter,sans-serif",fontSize:12}}>✕ Close</button>
+              <button onClick={()=>{setDrillDown(null);setDrawerOpen(false);}} style={{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"5px 12px",cursor:"pointer",fontFamily:"Inter,sans-serif",fontSize:12}}>✕ Close</button>
             </div>
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
@@ -811,6 +938,77 @@ xKey and yKeys must be exact column names from the dataset.`}]
                 ))}</tbody>
               </table>
               {drillDown.rows.length>25&&<div style={{padding:"10px 18px",fontSize:12,color:T.dim,borderTop:`1px solid ${T.border}`}}>Showing 25 of {drillDown.rows.length} rows</div>}
+            </div>
+          </div>
+        )}
+
+        {/* Slide-in drawer (bar click) */}
+        {drawerOpen && drillDown && drawerDetail && (
+          <div style={{position:"fixed",inset:0,zIndex:200,display:"flex",justifyContent:"flex-end"}} role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+            <div onClick={closeDrawer} style={{position:"absolute",inset:0,background:"rgba(15,23,42,0.42)",backdropFilter:"blur(2px)",WebkitBackdropFilter:"blur(2px)"}}/>
+            <div className="drawer-panel-anim" onClick={(e)=>e.stopPropagation()} style={{position:"relative",width:"min(440px,100vw)",maxWidth:"100%",height:"100%",background:T.card,boxShadow:"-12px 0 48px rgba(26,0,102,0.18)",display:"flex",flexDirection:"column",alignSelf:"stretch"}}>
+              <div style={{background:T.navy,flexShrink:0,padding:"16px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
+                <h2 id="drawer-title" style={{margin:0,fontSize:18,fontWeight:700,color:"#fff",letterSpacing:-0.4,lineHeight:1.25}}>{drillDown.label}</h2>
+                <button type="button" className="drawer-x" onClick={closeDrawer} aria-label="Close panel" style={{flexShrink:0,width:40,height:40,borderRadius:8,border:"none",background:"transparent",color:"rgba(255,255,255,0.92)",fontSize:24,lineHeight:1,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"Inter,sans-serif",transition:"background .15s"}}>×</button>
+              </div>
+              <div style={{flex:1,overflowY:"auto",padding:"18px 18px 28px",display:"flex",flexDirection:"column",gap:20}}>
+                <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:"14px 16px"}}>
+                  <div style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:12}}>Summary</div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:16,alignItems:"baseline"}}>
+                    <div>
+                      <div style={{fontSize:11,color:T.dim,marginBottom:4}}>Total open reqs</div>
+                      <div style={{fontSize:22,fontWeight:700,color:T.navy}}>{drawerDetail.totalOpenReqs}</div>
+                    </div>
+                    {drawerDetail.dateCol && drawerDetail.avgDaysOpen !== null && (
+                      <div>
+                        <div style={{fontSize:11,color:T.dim,marginBottom:4}}>Avg days open</div>
+                        <div style={{fontSize:22,fontWeight:700,color:T.teal2}}>{Math.round(drawerDetail.avgDaysOpen)}</div>
+                      </div>
+                    )}
+                  </div>
+                  {drawerDetail.statusCol && Object.keys(drawerDetail.statusBreakdown).length > 0 && (
+                    <div style={{marginTop:14,paddingTop:14,borderTop:`1px solid ${T.border}`}}>
+                      <div style={{fontSize:11,color:T.dim,marginBottom:8}}>Status</div>
+                      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+                        {Object.entries(drawerDetail.statusBreakdown).sort((a,b)=>b[1]-a[1]).map(([s,c])=>{
+                          const m = statusBadgeMeta(s);
+                          return <span key={s} style={{fontSize:12,fontWeight:500,background:m.bg,color:m.fg,border:`1px solid ${m.border}44`,borderRadius:20,padding:"4px 10px"}}>{c} · {s}</span>;
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <div style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:12}}>Roles</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                    {drawerDetail.roleCards.map((rc) => {
+                      const m = statusBadgeMeta(rc.statusRaw);
+                      return (
+                        <div key={rc.i} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"12px 14px",boxShadow:"0 1px 2px rgba(0,0,0,.04)"}}>
+                          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:10,marginBottom:6}}>
+                            <div style={{fontSize:14,fontWeight:600,color:T.navy,lineHeight:1.35}}>{rc.title}</div>
+                            {drawerDetail.statusCol && (
+                              <span style={{flexShrink:0,fontSize:11,fontWeight:600,background:m.bg,color:m.fg,border:`1px solid ${m.border}55`,borderRadius:20,padding:"3px 10px"}}>{m.label}</span>
+                            )}
+                          </div>
+                          {rc.location&&<div style={{fontSize:12,color:T.muted,marginBottom:4}}>{rc.location}</div>}
+                          {drawerDetail.hmCol&&<div style={{fontSize:12,color:T.dim}}><span style={{fontWeight:500,color:T.muted}}>Hiring manager:</span> {rc.hm || "—"}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div style={{background:T.tealLight,border:`1px solid ${T.tealMid}`,borderRadius:12,padding:"14px 16px"}}>
+                  <div style={{fontSize:11,fontWeight:600,color:T.teal2,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:10}}>AI summary</div>
+                  {drawerAiLoading ? (
+                    <div style={{display:"flex",gap:4,alignItems:"flex-end",height:22}}>
+                      {[0,.2,.4].map((d,i)=><div key={i} style={{width:5,background:T.teal2,borderRadius:2,animation:"wb .7s ease-in-out infinite",animationDelay:`${d}s`}}/>)}
+                    </div>
+                  ) : (
+                    <p style={{margin:0,fontSize:13,lineHeight:1.7,color:T.text}}>{drawerAi}</p>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}
