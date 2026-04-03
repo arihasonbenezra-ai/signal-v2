@@ -63,6 +63,18 @@ function shortStage(s) {
     .replace(/Virtual Interview/i,"Virtual").replace(/Onsite Interview/i,"Onsite")
     .replace(/Final Round/i,"Final").replace(/Interview/i,"Int.");
 }
+function leaderboardStatusDots(active, hold, other, cap = 36) {
+  const total = active + hold + other;
+  if (!total) return [];
+  let na = Math.round((active / total) * cap);
+  let nh = Math.round((hold / total) * cap);
+  let ng = Math.max(0, cap - na - nh);
+  const arr = [];
+  for (let i = 0; i < na; i++) arr.push("teal");
+  for (let i = 0; i < nh; i++) arr.push("amber");
+  for (let i = 0; i < ng; i++) arr.push("gray");
+  return arr.slice(0, cap);
+}
 
 function uniqueVals(rows, col) {
   if (isStatusCol(col)) {
@@ -532,6 +544,47 @@ export default function Signal() {
     });
     return rows;
   }, [filteredData, tableSort]);
+
+  const recruiterLeaderboard = useMemo(() => {
+    if (!analysis || !filteredData.length || !recruiterColH) return null;
+    const recCol = recruiterColH;
+    const statusCol = statusColH;
+    const groups = {};
+    filteredData.forEach((row) => {
+      const key = String(row[recCol] ?? "Unknown");
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(row);
+    });
+    const isFilled = (r) => statusCol && /filled/i.test(String(r[statusCol] ?? ""));
+    const entries = Object.entries(groups).map(([rawLabel, rows]) => {
+      const openRows = statusCol ? rows.filter((r) => !isFilled(r)) : rows;
+      const openCount = openRows.length;
+      let active = 0;
+      let hold = 0;
+      let other = 0;
+      openRows.forEach((r) => {
+        if (!statusCol) {
+          other += 1;
+          return;
+        }
+        const ns = normalizeStatus(String(r[statusCol] ?? ""));
+        if (ns === "Open, actively recruiting") active += 1;
+        else if (ns === "On Hold") hold += 1;
+        else other += 1;
+      });
+      return {
+        rawLabel,
+        displayName: rawLabel.replace(/^Primary\s+/i, "").trim() || rawLabel,
+        openCount,
+        active,
+        hold,
+        other,
+      };
+    });
+    entries.sort((a, b) => b.openCount - a.openCount);
+    const maxOpen = Math.max(1, ...entries.map((e) => e.openCount));
+    return { entries, maxOpen, recCol };
+  }, [analysis, filteredData, recruiterColH, statusColH]);
 
   // ─── DERIVED: summary cards ───────────────────────────────────────────────
   const summaryCards = useMemo(()=>{
@@ -1124,9 +1177,28 @@ xKey and yKeys must be exact column names from the dataset.`}]
 
   // ─── RESULTS SCREEN ───────────────────────────────────────────────────────
   const drillCols = drillDown ? Object.keys(drillDown.rows[0]||{}).slice(0,8) : [];
+  const activeFilterCount = Object.values(activeFilters).filter(Boolean).length;
+
+  const resultsPage = {
+    minHeight: "100vh",
+    background: `linear-gradient(165deg, ${T.bg} 0%, #eef1ee 42%, rgba(78,205,196,0.09) 100%)`,
+    color: T.text,
+    fontFamily: "Inter,sans-serif",
+    fontSize: 14,
+    display: "flex",
+    flexDirection: "column",
+  };
+  const cardAccent = (accent, extra = {}) => ({
+    background: T.card,
+    border: `1px solid ${T.border}`,
+    borderLeft: `4px solid ${accent}`,
+    borderRadius: 12,
+    boxShadow: "0 1px 2px rgba(26,0,102,0.05), 0 8px 28px rgba(0,0,0,0.04)",
+    ...extra,
+  });
 
   return (
-    <div style={{...base,display:"flex",flexDirection:"column"}}>
+    <div style={resultsPage}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         @keyframes wb{0%,100%{height:4px;opacity:.2}50%{height:18px;opacity:1}}
@@ -1137,6 +1209,10 @@ xKey and yKeys must be exact column names from the dataset.`}]
         .viz-pill{font-family:Inter,sans-serif;font-size:12px;font-weight:600;padding:7px 14px;border-radius:999px;border:1px solid ${T.border};cursor:pointer;transition:background .15s,color .15s,border-color .15s,box-shadow .15s;background:transparent;color:${T.muted};}
         .viz-pill:hover{color:${T.text};border-color:${T.tealMid};background:${T.tealLight};}
         .viz-pill-on{background:${T.navy}!important;color:#fff!important;border-color:${T.navy}!important;box-shadow:0 1px 3px rgba(26,0,102,.2);}
+        .lb-wrap{font-family:Inter,sans-serif;}
+        .lb-card{text-align:left;width:100%;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease;background:linear-gradient(145deg,rgba(26,0,102,.22) 0%,rgba(15,20,32,.92) 100%);border:1px solid rgba(78,205,196,.2);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 12px rgba(0,0,0,.25);}
+        .lb-card:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(26,0,102,.35);border-color:rgba(78,205,196,.45);}
+        .lb-card:focus{outline:2px solid ${T.teal};outline-offset:2px;}
         .drawer-panel-anim{animation:drawerSlideIn .38s cubic-bezier(.22,1,.36,1) forwards}
         .drawer-x:hover{background:rgba(255,255,255,.12)!important;color:#fff!important;}
         .sq-chip{background:${T.card};border:1px solid ${T.border};color:${T.muted};border-radius:20px;padding:5px 14px;cursor:pointer;font-family:Inter,sans-serif;font-size:12px;font-weight:500;transition:all .15s;}
@@ -1148,41 +1224,79 @@ xKey and yKeys must be exact column names from the dataset.`}]
         .filter-sel{background:${T.card};border:1px solid ${T.border};border-radius:8px;color:${T.text};font-family:Inter,sans-serif;font-size:12px;padding:6px 10px;outline:none;cursor:pointer;transition:border-color .15s;}
         .filter-sel:focus{border-color:${T.teal};box-shadow:0 0 0 3px ${T.tealLight};}
         .view-btn{padding:6px 16px;border-radius:8px;font-size:12px;font-weight:500;font-family:Inter,sans-serif;cursor:pointer;border:none;transition:all .15s;}
+        .view-seg{display:inline-flex;gap:4px;background:${T.surface};border:1px solid ${T.border};border-radius:12px;padding:4px;box-shadow:inset 0 1px 2px rgba(0,0,0,.03);}
+        .view-seg-btn{padding:11px 22px;border-radius:10px;font-size:13px;font-weight:600;font-family:Inter,sans-serif;cursor:pointer;border:none;transition:background .18s ease,color .18s ease,box-shadow .18s ease;min-width:112px;}
+        .view-seg-btn-off{background:transparent;color:${T.muted};}
+        .view-seg-btn-off:hover{color:${T.text};background:rgba(255,255,255,.7);}
+        .view-seg-btn-on{background:${T.navy}!important;color:#fff!important;box-shadow:0 2px 8px rgba(26,0,102,.22);}
         ::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-thumb{background:${T.border2};border-radius:2px;}
         @media(max-width:680px){.rg{grid-template-columns:1fr!important;}}
         .dr:hover td{background:${T.tealLight}!important;}
         input:focus,select:focus{border-color:${T.teal}!important;box-shadow:0 0 0 3px ${T.tealLight}!important;}
       `}</style>
 
-      {/* Header */}
-      <div style={{background:T.card,borderBottom:`1px solid ${T.border}`,padding:"0 24px",height:60,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,position:"sticky",top:0,zIndex:20}}>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <div style={{width:28,height:28,background:T.navy,borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center"}}>
-            <svg width="14" height="14" viewBox="0 0 18 18" fill="none"><rect x="2" y="10" width="3" height="6" rx="1" fill={T.teal}/><rect x="7" y="6" width="3" height="10" rx="1" fill={T.teal} opacity=".75"/><rect x="12" y="2" width="3" height="14" rx="1" fill={T.teal} opacity=".45"/></svg>
+      {/* Sticky top bar */}
+      <div style={{
+        background: "rgba(255,255,255,0.86)",
+        backdropFilter: "saturate(180%) blur(14px)",
+        WebkitBackdropFilter: "saturate(180%) blur(14px)",
+        borderBottom: `1px solid ${T.border}`,
+        padding: "0 24px",
+        minHeight: 64,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexShrink: 0,
+        position: "sticky",
+        top: 0,
+        zIndex: 20,
+        gap: 16,
+        boxShadow: "0 4px 24px rgba(26,0,102,0.06)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: "1 1 auto" }}>
+          <div style={{ width: 32, height: 32, background: T.navy, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `0 2px 8px rgba(26,0,102,.2)` }}>
+            <svg width="15" height="15" viewBox="0 0 18 18" fill="none"><rect x="2" y="10" width="3" height="6" rx="1" fill={T.teal}/><rect x="7" y="6" width="3" height="10" rx="1" fill={T.teal} opacity=".75"/><rect x="12" y="2" width="3" height="14" rx="1" fill={T.teal} opacity=".45"/></svg>
           </div>
-          <span style={{fontSize:16,fontWeight:700,color:T.text}}>Signal</span>
-          {analysis?.ats&&analysis.ats!=="unknown"&&<span style={{fontSize:11,fontWeight:600,background:T.tealLight,color:T.teal2,border:`1px solid ${T.tealMid}`,borderRadius:20,padding:"2px 10px",textTransform:"capitalize"}}>{analysis.ats}</span>}
-          {analysis?.reportType&&<span style={{fontSize:11,fontWeight:500,background:T.surface,color:T.muted,border:`1px solid ${T.border}`,borderRadius:20,padding:"2px 10px",textTransform:"capitalize"}}>{analysis.reportType.replace(/-/g," ")}</span>}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.muted, letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 2 }}>Current report</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: T.navy, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "min(420px, 48vw)" }} title={fileName}>{fileName}</div>
+          </div>
         </div>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <span style={{fontSize:12,color:T.dim}}>{fileName} · {hasFilters?<span style={{color:T.navy,fontWeight:600}}>{filteredData.length} of </span>:""}{data.length.toLocaleString()} rows</span>
-          <button onClick={async ()=>{ await exportPDF(analysis,summaryCards,fileName,isPipelineReport,pipelineNumericCols,activeFilters,filteredData.length,data.length,filteredData); }}
-            style={{background:T.navy,color:"#fff",border:"none",borderRadius:8,padding:"5px 14px",cursor:"pointer",fontFamily:"Inter,sans-serif",fontSize:12,fontWeight:600,transition:"background .15s"}}>
-            Export PDF
-          </button>
-          <button className="back-btn" onClick={()=>{setStep("upload");setAnalysis(null);setChatMsgs([]);setError("");resetAll();}}
-            style={{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,padding:"5px 14px",cursor:"pointer",fontFamily:"Inter,sans-serif",fontSize:12,fontWeight:500,transition:"all .15s"}}>
-            ← New report
-          </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: T.text, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 12px", fontVariantNumeric: "tabular-nums" }}>
+              {hasFilters ? <><span style={{ color: T.teal2 }}>{filteredData.length.toLocaleString()}</span> / {data.length.toLocaleString()} rows</> : <>{data.length.toLocaleString()} rows</>}
+            </span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: activeFilterCount ? T.navy : T.dim, background: activeFilterCount ? T.tealLight : T.surface, border: `1px solid ${activeFilterCount ? T.tealMid : T.border}`, borderRadius: 8, padding: "6px 12px" }}>
+              {activeFilterCount} filter{activeFilterCount !== 1 ? "s" : ""} active
+            </span>
+            {analysis?.ats && analysis.ats !== "unknown" && (
+              <span style={{ fontSize: 11, fontWeight: 600, background: T.tealLight, color: T.teal2, border: `1px solid ${T.tealMid}`, borderRadius: 20, padding: "4px 10px", textTransform: "capitalize" }}>{analysis.ats}</span>
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={async () => { await exportPDF(analysis, summaryCards, fileName, isPipelineReport, pipelineNumericCols, activeFilters, filteredData.length, data.length, filteredData); }}
+              style={{ background: "transparent", color: T.navy, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontFamily: "Inter,sans-serif", fontSize: 12, fontWeight: 600, transition: "all .15s" }}
+            >
+              Export PDF
+            </button>
+            <button
+              onClick={() => { setStep("upload"); setAnalysis(null); setChatMsgs([]); setError(""); resetAll(); }}
+              style={{ background: T.navy, color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontFamily: "Inter,sans-serif", fontSize: 12, fontWeight: 600, transition: "background .15s", boxShadow: "0 2px 8px rgba(26,0,102,.25)" }}
+            >
+              New report
+            </button>
+          </div>
         </div>
       </div>
 
-      <div style={{padding:"20px 24px 48px",maxWidth:1020,margin:"0 auto",width:"100%",boxSizing:"border-box"}}>
-        <h1 style={{fontSize:20,fontWeight:700,color:T.text,margin:"0 0 16px",letterSpacing:-0.3}}>{analysis?.title}</h1>
+      <div style={{padding:"24px 24px 56px",maxWidth:1040,margin:"0 auto",width:"100%",boxSizing:"border-box"}}>
+        <h1 style={{fontSize:22,fontWeight:700,color:T.navy,margin:"0 0 20px",letterSpacing:-0.4,lineHeight:1.25}}>{analysis?.title}</h1>
 
         {/* Filters */}
         {filterCols.length>0&&(
-          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"12px 16px",marginBottom:14,display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}}>
+          <div style={{...cardAccent(T.navy),padding:"14px 18px",marginBottom:16,display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-end"}}>
             <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase",marginRight:4,paddingBottom:2}}>Filters</span>
             {filterCols.map(col=>(
               <div key={col} style={{display:"flex",flexDirection:"column",gap:3}}>
@@ -1203,19 +1317,17 @@ xKey and yKeys must be exact column names from the dataset.`}]
         )}
 
         {/* View toggle */}
-        <div style={{display:"flex",gap:2,marginBottom:14,background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:3,width:"fit-content"}}>
+        <div className="view-seg" style={{ marginBottom: 18 }}>
           {[["chart","Chart"],["cards","Summary"]].map(([m,l])=>(
-            <button key={m} className="view-btn" onClick={()=>setViewMode(m)}
-              style={{background:viewMode===m?T.card:"transparent",color:viewMode===m?T.text:T.muted,
-                boxShadow:viewMode===m?`0 1px 3px rgba(0,0,0,.08),0 0 0 1px ${T.border}`:"none"}}>
+            <button key={m} type="button" className={`view-seg-btn${viewMode===m?" view-seg-btn-on":" view-seg-btn-off"}`} onClick={()=>setViewMode(m)}>
               {l}
             </button>
           ))}
         </div>
 
-        <div className="rg" style={{display:"grid",gridTemplateColumns:"minmax(0,1.2fr) minmax(0,.8fr)",gap:14,marginBottom:14}}>
-          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:12,overflow:"hidden"}}>
-            <div style={{padding:"13px 18px 11px",borderBottom:`1px solid ${T.border}`,borderTop:`3px solid ${T.navy}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div className="rg" style={{display:"grid",gridTemplateColumns:"minmax(0,1.2fr) minmax(0,.8fr)",gap:16,marginBottom:16}}>
+          <div style={{...cardAccent(T.teal),borderTop:`2px solid ${T.teal}`,overflow:"hidden"}}>
+            <div style={{padding:"14px 18px 12px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(180deg, rgba(78,205,196,0.06) 0%, transparent 100%)"}}>
               <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>{viewMode==="chart"?"Visualization":"Summary"}</span>
               {hasFilters&&<span style={{fontSize:11,color:T.teal2,fontWeight:500}}>Filtered view</span>}
             </div>
@@ -1261,7 +1373,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
               <div style={{padding:"14px 16px",display:"flex",flexDirection:"column",gap:10,maxHeight:400,overflowY:"auto"}}>
                 {summaryCards.length===0?<div style={{color:T.dim,fontSize:13,textAlign:"center",padding:"2rem"}}>No data</div>:
                 summaryCards.map((card,i)=>(
-                  <div key={i} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:"12px 14px"}}>
+                  <div key={i} style={{background:T.surface,border:`1px solid ${T.border}`,borderLeft:`3px solid ${i % 2 === 0 ? T.teal2 : T.navy}`,borderRadius:10,padding:"12px 14px",boxShadow:"0 1px 3px rgba(0,0,0,.04)"}}>
                     {isPipelineReport?(
                       <>
                         <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:10}}>
@@ -1312,16 +1424,16 @@ xKey and yKeys must be exact column names from the dataset.`}]
             )}
           </div>
 
-          <div style={{display:"flex",flexDirection:"column",gap:12}}>
-            <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:12,overflow:"hidden",flex:1}}>
-              <div onClick={()=>setSummaryOpen(o=>!o)} style={{padding:"13px 18px 11px",borderBottom:summaryOpen?`1px solid ${T.border}`:"none",borderTop:`3px solid ${T.teal}`,display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div style={{...cardAccent(T.teal),overflow:"hidden",flex:1}}>
+              <div onClick={()=>setSummaryOpen(o=>!o)} style={{padding:"14px 18px 12px",borderBottom:summaryOpen?`1px solid ${T.border}`:"none",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",background:"linear-gradient(180deg, rgba(78,205,196,0.05) 0%, transparent 100%)"}}>
                 <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>The Brief</span>
                 <span style={{fontSize:14,color:T.dim}}>{summaryOpen?"−":"+"}</span>
               </div>
               {summaryOpen&&<div style={{padding:"16px 18px"}}><p style={{fontSize:13,lineHeight:1.75,color:T.text,margin:0}}>{analysis?.narrative}</p></div>}
             </div>
-            <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:12,overflow:"hidden"}}>
-              <div onClick={()=>setSignalsOpen(o=>!o)} style={{padding:"13px 18px 11px",borderBottom:signalsOpen?`1px solid ${T.border}`:"none",borderTop:`3px solid ${T.navy}`,display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
+            <div style={{...cardAccent(T.navy),overflow:"hidden"}}>
+              <div onClick={()=>setSignalsOpen(o=>!o)} style={{padding:"14px 18px 12px",borderBottom:signalsOpen?`1px solid ${T.border}`:"none",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",background:"linear-gradient(180deg, rgba(26,0,102,0.04) 0%, transparent 100%)"}}>
                 <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>Key signals</span>
                 <span style={{fontSize:14,color:T.dim}}>{signalsOpen?"−":"+"}</span>
               </div>
@@ -1339,10 +1451,104 @@ xKey and yKeys must be exact column names from the dataset.`}]
           </div>
         </div>
 
+        {viewMode === "chart" && recruiterLeaderboard && recruiterLeaderboard.entries.length > 0 && (
+          <div className="lb-wrap" style={{ ...cardAccent(T.teal), padding: 0, overflow: "hidden", marginBottom: 16, animation: "su .28s ease" }}>
+            <div
+              style={{
+                background: "linear-gradient(180deg, #0f1419 0%, #0a0e14 100%)",
+                borderTop: `2px solid ${T.teal}`,
+                padding: "16px 18px 18px",
+                boxShadow: "inset 0 1px 0 rgba(78,205,196,0.12)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 14, gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(78,205,196,0.85)", marginBottom: 4 }}>Recruiter leaderboard</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#F1F5F9", letterSpacing: -0.3 }}>Open reqs by recruiter</div>
+                </div>
+                <div style={{ fontSize: 11, color: "rgba(148,163,184,0.95)", fontWeight: 500 }}>{filteredData.length} rows in view</div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {recruiterLeaderboard.entries.map((e, idx) => {
+                  const pct = recruiterLeaderboard.maxOpen > 0 ? (e.openCount / recruiterLeaderboard.maxOpen) * 100 : 0;
+                  const dots = leaderboardStatusDots(e.active, e.hold, e.other);
+                  const dotColor = (k) => (k === "teal" ? T.teal2 : k === "amber" ? T.amber : "rgba(148,163,184,0.85)");
+                  return (
+                    <button
+                      key={e.rawLabel}
+                      type="button"
+                      className="lb-card"
+                      onClick={() => openDrillForColumn(recruiterLeaderboard.recCol, e.rawLabel)}
+                    >
+                      <div
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: 8,
+                          background: "rgba(78,205,196,0.15)",
+                          border: "1px solid rgba(78,205,196,0.35)",
+                          color: T.teal,
+                          fontSize: 13,
+                          fontWeight: 800,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {idx + 1}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: "#F8FAFC", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.displayName}</span>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: T.teal, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{e.openCount}</span>
+                        </div>
+                        <div style={{ height: 6, borderRadius: 999, background: "rgba(255,255,255,0.06)", overflow: "hidden", marginBottom: 8 }}>
+                          <div
+                            style={{
+                              height: "100%",
+                              width: `${pct}%`,
+                              borderRadius: 999,
+                              background: `linear-gradient(90deg, ${T.navy2} 0%, ${T.teal2} 100%)`,
+                              boxShadow: `0 0 12px rgba(78,205,196,0.35)`,
+                              transition: "width .4s ease",
+                            }}
+                          />
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                          {dots.map((k, di) => (
+                            <span
+                              key={di}
+                              style={{
+                                width: 7,
+                                height: 7,
+                                borderRadius: "50%",
+                                background: dotColor(k),
+                                boxShadow: k === "teal" ? `0 0 6px ${T.teal}88` : "none",
+                                flexShrink: 0,
+                              }}
+                            />
+                          ))}
+                          <span style={{ fontSize: 10, color: "rgba(148,163,184,0.9)", marginLeft: 4, fontWeight: 500 }}>
+                            {[e.active > 0 && `${e.active} active`, e.hold > 0 && `${e.hold} on hold`, e.other > 0 && `${e.other} other`].filter(Boolean).join(" · ") || (e.openCount === 0 ? "No open reqs" : "")}
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 10, color: "rgba(148,163,184,0.75)", marginTop: 12, textAlign: "center", letterSpacing: "0.02em" }}>
+                Dots ≈ status mix (teal active · amber on hold · gray other) · Click a row to open details
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Drill-down */}
         {drillDown&&(
-          <div style={{background:T.card,border:`1px solid ${T.tealMid}`,borderRadius:12,overflow:"hidden",marginBottom:14,animation:"su .2s ease"}}>
-            <div style={{padding:"13px 18px 11px",borderBottom:`1px solid ${T.border}`,borderTop:`3px solid ${T.teal}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{...cardAccent(T.teal),borderTop:`2px solid ${T.teal}`,overflow:"hidden",marginBottom:16,animation:"su .2s ease"}}>
+            <div style={{padding:"14px 18px 12px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(180deg, rgba(78,205,196,0.07) 0%, transparent 100%)"}}>
               <div>
                 <div style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>{drillDown.isRecruiter?"Recruiter brief":"Drill-down"}</div>
                 <div style={{fontSize:13,fontWeight:600,color:T.navy,marginTop:2}}>{drillDown.label} <span style={{color:T.dim,fontWeight:400}}>· {drillDown.rows.length} row{drillDown.rows.length!==1?"s":""}</span></div>
@@ -1435,8 +1641,8 @@ xKey and yKeys must be exact column names from the dataset.`}]
         )}
 
         {/* Ask Signal */}
-        <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:12,overflow:"hidden"}}>
-          <div style={{padding:"13px 18px",borderBottom:`1px solid ${T.border}`,borderTop:`3px solid ${T.navy}`,display:"flex",alignItems:"center",gap:8}}>
+        <div style={{...cardAccent(T.navy),overflow:"hidden"}}>
+          <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:8,background:"linear-gradient(180deg, rgba(26,0,102,0.05) 0%, transparent 100%)"}}>
             <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>Ask Signal</span>
             <span style={{fontSize:12,color:T.dim}}>— ask anything about this report</span>
           </div>
