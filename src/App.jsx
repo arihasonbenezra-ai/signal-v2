@@ -3,6 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsive
 
 const T = {
   navy:"#1E3A6E",navy2:"#1E3A6E",teal:"#3A6FD4",teal2:"#3A6FD4",
+  wordmark:"#1A2233",
   tealLight:"#EBF2FD",tealMid:"#7EB3F5",bg:"#F6F7F5",card:"#FFFFFF",
   surface:"#EBF0EB",border:"#DDE3DD",border2:"#C8D0C8",text:"#3D4042",
   muted:"#6B7280",dim:"#9CA3AF",green:"#059669",greenLight:"#ECFDF5",
@@ -10,6 +11,31 @@ const T = {
   chart:["#3A6FD4","#1E3A6E","#D97706","#059669","#C77DFF","#FF85A1","#F97316","#06B6D4"],
   pipeline:["#C8F0ED","#90DDD8","#3A6FD4","#3A6FD4","#1E8A85","#0F5F5A","#1E3A6E"],
 };
+
+function SignalLogoMark({ size = 32 }) {
+  const pad = Math.max(4, Math.round(size * 0.18));
+  const svgSize = size - pad * 2;
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        background: "#1E3A6E",
+        borderRadius: 10,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+      }}
+    >
+      <svg width={svgSize} height={svgSize} viewBox="0 0 24 24" fill="none" aria-hidden>
+        <rect x="3" y="14" width="4" height="6" rx="0.5" fill="#7EB3F5" />
+        <rect x="10" y="10" width="4" height="10" rx="0.5" fill="#7EB3F5" />
+        <rect x="17" y="4" width="4" height="16" rx="0.5" fill="#FFFFFF" />
+      </svg>
+    </div>
+  );
+}
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 const STATUS_MAP = {"filled":"Filled","on hold":"On Hold"};
@@ -1103,16 +1129,16 @@ xKey and yKeys must be exact column names from the dataset.`}]
       `}</style>
       <div style={{marginBottom:"2rem",textAlign:"center"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:16,marginBottom:12}}>
-          <div style={{width:72,height:72,background:T.navy,borderRadius:18,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:`0 4px 24px rgba(30,58,110,0.18)`}}>
-            <svg width="34" height="34" viewBox="0 0 18 18" fill="none"><rect x="2" y="10" width="3" height="6" rx="1" fill={T.teal}/><rect x="7" y="6" width="3" height="10" rx="1" fill={T.teal} opacity=".75"/><rect x="12" y="2" width="3" height="14" rx="1" fill={T.teal} opacity=".45"/></svg>
+          <div style={{ boxShadow: "0 4px 24px rgba(30,58,110,0.18)" }}>
+            <SignalLogoMark size={56} />
           </div>
           <div style={{textAlign:"left"}}>
-            <div style={{fontSize:42,fontWeight:700,color:T.text,letterSpacing:-1.5,lineHeight:1}}>Signal</div>
-            <div style={{fontSize:15,color:T.dim,marginTop:4}}>Your <span style={{color:T.teal2,fontWeight:700}}>talent</span> data, clearly.</div>
+            <div style={{fontSize:42,fontWeight:700,color:T.wordmark,letterSpacing:-1.5,lineHeight:1,fontFamily:"Inter,sans-serif"}}>Signal.</div>
+            <div style={{fontSize:15,color:T.dim,marginTop:4,maxWidth:420,lineHeight:1.45}}>Drop a report. Get the story.</div>
           </div>
         </div>
         <div style={{fontSize:13,color:T.muted,margin:"0 auto",lineHeight:1.6}}>
-          Drop in a report from your <span style={{color:T.green,fontWeight:600}}>People</span> team and <span style={{color:T.navy,fontWeight:600}}>Signal</span> will read it, visualize it, and help you tell the story.
+          Drop in a report from your <span style={{color:T.teal2,fontWeight:600}}>People</span> team and <span style={{color:T.teal2,fontWeight:600}}>Signal</span> will read it, visualize it, and help you tell the story.
         </div>
       </div>
       <div style={{width:"100%",maxWidth:500,background:T.card,border:`1px solid ${T.border}`,borderRadius:12,overflow:"hidden"}}>
@@ -1161,10 +1187,8 @@ xKey and yKeys must be exact column names from the dataset.`}]
     <div style={{...base,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"2rem"}}>
       <style>{`@keyframes wb{0%,100%{height:5px;opacity:.2}50%{height:32px;opacity:1}}`}</style>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
-        <div style={{width:32,height:32,background:T.navy,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center"}}>
-          <svg width="16" height="16" viewBox="0 0 18 18" fill="none"><rect x="2" y="10" width="3" height="6" rx="1" fill={T.teal}/><rect x="7" y="6" width="3" height="10" rx="1" fill={T.teal} opacity=".75"/><rect x="12" y="2" width="3" height="14" rx="1" fill={T.teal} opacity=".45"/></svg>
-        </div>
-        <span style={{fontSize:20,fontWeight:700,color:T.text,letterSpacing:-0.5}}>Signal</span>
+        <SignalLogoMark size={32} />
+        <span style={{fontSize:20,fontWeight:700,color:T.wordmark,letterSpacing:-0.5,fontFamily:"Inter,sans-serif"}}>Signal.</span>
       </div>
       <div style={{display:"flex",gap:4,alignItems:"flex-end",height:40}}>
         {[0,.08,.16,.24,.32,.40,.48,.56,.64,.72,.80].map((d,i)=>(
@@ -1254,8 +1278,8 @@ xKey and yKeys must be exact column names from the dataset.`}]
         boxShadow: "0 4px 24px rgba(30,58,110,0.06)",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: "1 1 auto" }}>
-          <div style={{ width: 32, height: 32, background: T.navy, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `0 2px 8px rgba(30,58,110,.2)` }}>
-            <svg width="15" height="15" viewBox="0 0 18 18" fill="none"><rect x="2" y="10" width="3" height="6" rx="1" fill={T.teal}/><rect x="7" y="6" width="3" height="10" rx="1" fill={T.teal} opacity=".75"/><rect x="12" y="2" width="3" height="14" rx="1" fill={T.teal} opacity=".45"/></svg>
+          <div style={{ boxShadow: "0 2px 8px rgba(30,58,110,.2)" }}>
+            <SignalLogoMark size={32} />
           </div>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: T.muted, letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 2 }}>Current report</div>
