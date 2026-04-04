@@ -2,13 +2,13 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
 const T = {
-  navy:"#1A0066",navy2:"#250088",teal:"#4ECDC4",teal2:"#38B8AF",
-  tealLight:"#E8F8F7",tealMid:"#A8E6E3",bg:"#F6F7F5",card:"#FFFFFF",
+  navy:"#1E3A6E",navy2:"#1E3A6E",teal:"#3A6FD4",teal2:"#3A6FD4",
+  tealLight:"#EBF2FD",tealMid:"#7EB3F5",bg:"#F6F7F5",card:"#FFFFFF",
   surface:"#EBF0EB",border:"#DDE3DD",border2:"#C8D0C8",text:"#3D4042",
   muted:"#6B7280",dim:"#9CA3AF",green:"#059669",greenLight:"#ECFDF5",
   amber:"#D97706",amberLight:"#FFFBEB",red:"#DC2626",redLight:"#FEF2F2",
-  chart:["#4ECDC4","#1A0066","#D97706","#059669","#C77DFF","#FF85A1","#F97316","#06B6D4"],
-  pipeline:["#C8F0ED","#90DDD8","#4ECDC4","#38B8AF","#1E8A85","#0F5F5A","#1A0066"],
+  chart:["#3A6FD4","#1E3A6E","#D97706","#059669","#C77DFF","#FF85A1","#F97316","#06B6D4"],
+  pipeline:["#C8F0ED","#90DDD8","#3A6FD4","#3A6FD4","#1E8A85","#0F5F5A","#1E3A6E"],
 };
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -162,7 +162,7 @@ function toCSVUrl(url) {
 async function exportPDF(analysis, summaryCards, fileName, isPipelineReport, pipelineNumericCols, activeFilters, filteredCount, totalCount, filteredRows) {
   const doc = window._jsPDF && new window._jsPDF.jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
   if (!doc) { alert("PDF library still loading — try again."); return; }
-  const navy=[26,0,102], teal=[78,205,196], pageW=210, margin=20;
+  const navy=[30,58,110], teal=[58,111,212], pageW=210, margin=20;
   doc.setFillColor(...navy); doc.rect(0,0,pageW,28,"F");
   doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(16);
   doc.text("Signal.", margin, 17);
@@ -833,7 +833,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
   const renderChart = () => {
     if (!analysis||!chartData.length) return <div style={{padding:"2rem",textAlign:"center",color:T.dim,fontSize:13}}>No data for current filters</div>;
     const xk = chartXKey;
-    const tt = {contentStyle:{background:T.card,border:`1px solid ${T.border}`,color:T.text,fontFamily:"Inter,sans-serif",fontSize:12,borderRadius:8},labelStyle:{color:T.navy,fontWeight:600},cursor:{fill:"rgba(26,0,102,0.04)"}};
+    const tt = {contentStyle:{background:T.card,border:`1px solid ${T.border}`,color:T.text,fontFamily:"Inter,sans-serif",fontSize:12,borderRadius:8},labelStyle:{color:T.navy,fontWeight:600},cursor:{fill:"rgba(30,58,110,0.04)"}};
     const ax = {tick:{fill:T.muted,fontSize:11,fontFamily:"Inter,sans-serif"}};
     const barKeys = isPipelineReport ? pipelineNumericCols.map(c=>shortStage(c)) : ["Count"];
     return (
@@ -976,7 +976,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
               {statuses.map((s) => {
                 const n = counts[`${r}\0${s}`] || 0;
                 const t = max > 0 ? n / max : 0;
-                const bg = n === 0 ? T.bg : `rgba(26, 0, 102, ${0.1 + t * 0.78})`;
+                const bg = n === 0 ? T.bg : `rgba(30, 58, 110, ${0.1 + t * 0.78})`;
                 const fg = t > 0.45 ? "#fff" : T.text;
                 return (
                   <button
@@ -1103,7 +1103,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
       `}</style>
       <div style={{marginBottom:"2rem",textAlign:"center"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:16,marginBottom:12}}>
-          <div style={{width:72,height:72,background:T.navy,borderRadius:18,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:`0 4px 24px rgba(26,0,102,0.18)`}}>
+          <div style={{width:72,height:72,background:T.navy,borderRadius:18,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:`0 4px 24px rgba(30,58,110,0.18)`}}>
             <svg width="34" height="34" viewBox="0 0 18 18" fill="none"><rect x="2" y="10" width="3" height="6" rx="1" fill={T.teal}/><rect x="7" y="6" width="3" height="10" rx="1" fill={T.teal} opacity=".75"/><rect x="12" y="2" width="3" height="14" rx="1" fill={T.teal} opacity=".45"/></svg>
           </div>
           <div style={{textAlign:"left"}}>
@@ -1181,7 +1181,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
 
   const resultsPage = {
     minHeight: "100vh",
-    background: `linear-gradient(165deg, ${T.bg} 0%, #eef1ee 42%, rgba(78,205,196,0.09) 100%)`,
+    background: `linear-gradient(165deg, ${T.bg} 0%, #eef1ee 42%, rgba(58,111,212,0.09) 100%)`,
     color: T.text,
     fontFamily: "Inter,sans-serif",
     fontSize: 14,
@@ -1193,7 +1193,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
     border: `1px solid ${T.border}`,
     borderLeft: `4px solid ${accent}`,
     borderRadius: 12,
-    boxShadow: "0 1px 2px rgba(26,0,102,0.05), 0 8px 28px rgba(0,0,0,0.04)",
+    boxShadow: "0 1px 2px rgba(30,58,110,0.05), 0 8px 28px rgba(0,0,0,0.04)",
     ...extra,
   });
 
@@ -1208,10 +1208,10 @@ xKey and yKeys must be exact column names from the dataset.`}]
         .viz-fade{animation:vizFadeIn .28s ease-out}
         .viz-pill{font-family:Inter,sans-serif;font-size:12px;font-weight:600;padding:7px 14px;border-radius:999px;border:1px solid ${T.border};cursor:pointer;transition:background .15s,color .15s,border-color .15s,box-shadow .15s;background:transparent;color:${T.muted};}
         .viz-pill:hover{color:${T.text};border-color:${T.tealMid};background:${T.tealLight};}
-        .viz-pill-on{background:${T.navy}!important;color:#fff!important;border-color:${T.navy}!important;box-shadow:0 1px 3px rgba(26,0,102,.2);}
+        .viz-pill-on{background:${T.navy}!important;color:#fff!important;border-color:${T.navy}!important;box-shadow:0 1px 3px rgba(30,58,110,.2);}
         .lb-wrap{font-family:Inter,sans-serif;}
-        .lb-card{text-align:left;width:100%;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease;background:linear-gradient(145deg,rgba(26,0,102,.22) 0%,rgba(15,20,32,.92) 100%);border:1px solid rgba(78,205,196,.2);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 12px rgba(0,0,0,.25);}
-        .lb-card:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(26,0,102,.35);border-color:rgba(78,205,196,.45);}
+        .lb-card{text-align:left;width:100%;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease;background:linear-gradient(145deg,rgba(30,58,110,.22) 0%,rgba(15,20,32,.92) 100%);border:1px solid rgba(58,111,212,.2);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 12px rgba(0,0,0,.25);}
+        .lb-card:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(30,58,110,.35);border-color:rgba(58,111,212,.45);}
         .lb-card:focus{outline:2px solid ${T.teal};outline-offset:2px;}
         .drawer-panel-anim{animation:drawerSlideIn .38s cubic-bezier(.22,1,.36,1) forwards}
         .drawer-x:hover{background:rgba(255,255,255,.12)!important;color:#fff!important;}
@@ -1228,7 +1228,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
         .view-seg-btn{padding:11px 22px;border-radius:10px;font-size:13px;font-weight:600;font-family:Inter,sans-serif;cursor:pointer;border:none;transition:background .18s ease,color .18s ease,box-shadow .18s ease;min-width:112px;}
         .view-seg-btn-off{background:transparent;color:${T.muted};}
         .view-seg-btn-off:hover{color:${T.text};background:rgba(255,255,255,.7);}
-        .view-seg-btn-on{background:${T.navy}!important;color:#fff!important;box-shadow:0 2px 8px rgba(26,0,102,.22);}
+        .view-seg-btn-on{background:${T.navy}!important;color:#fff!important;box-shadow:0 2px 8px rgba(30,58,110,.22);}
         ::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-thumb{background:${T.border2};border-radius:2px;}
         @media(max-width:680px){.rg{grid-template-columns:1fr!important;}}
         .dr:hover td{background:${T.tealLight}!important;}
@@ -1251,10 +1251,10 @@ xKey and yKeys must be exact column names from the dataset.`}]
         top: 0,
         zIndex: 20,
         gap: 16,
-        boxShadow: "0 4px 24px rgba(26,0,102,0.06)",
+        boxShadow: "0 4px 24px rgba(30,58,110,0.06)",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: "1 1 auto" }}>
-          <div style={{ width: 32, height: 32, background: T.navy, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `0 2px 8px rgba(26,0,102,.2)` }}>
+          <div style={{ width: 32, height: 32, background: T.navy, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `0 2px 8px rgba(30,58,110,.2)` }}>
             <svg width="15" height="15" viewBox="0 0 18 18" fill="none"><rect x="2" y="10" width="3" height="6" rx="1" fill={T.teal}/><rect x="7" y="6" width="3" height="10" rx="1" fill={T.teal} opacity=".75"/><rect x="12" y="2" width="3" height="14" rx="1" fill={T.teal} opacity=".45"/></svg>
           </div>
           <div style={{ minWidth: 0 }}>
@@ -1283,7 +1283,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
             </button>
             <button
               onClick={() => { setStep("upload"); setAnalysis(null); setChatMsgs([]); setError(""); resetAll(); }}
-              style={{ background: T.navy, color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontFamily: "Inter,sans-serif", fontSize: 12, fontWeight: 600, transition: "background .15s", boxShadow: "0 2px 8px rgba(26,0,102,.25)" }}
+              style={{ background: T.navy, color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontFamily: "Inter,sans-serif", fontSize: 12, fontWeight: 600, transition: "background .15s", boxShadow: "0 2px 8px rgba(30,58,110,.25)" }}
             >
               New report
             </button>
@@ -1327,7 +1327,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
 
         <div className="rg" style={{display:"grid",gridTemplateColumns:"minmax(0,1.2fr) minmax(0,.8fr)",gap:16,marginBottom:16}}>
           <div style={{...cardAccent(T.teal),borderTop:`2px solid ${T.teal}`,overflow:"hidden"}}>
-            <div style={{padding:"14px 18px 12px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(180deg, rgba(78,205,196,0.06) 0%, transparent 100%)"}}>
+            <div style={{padding:"14px 18px 12px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(180deg, rgba(58,111,212,0.06) 0%, transparent 100%)"}}>
               <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>{viewMode==="chart"?"Visualization":"Summary"}</span>
               {hasFilters&&<span style={{fontSize:11,color:T.teal2,fontWeight:500}}>Filtered view</span>}
             </div>
@@ -1426,14 +1426,14 @@ xKey and yKeys must be exact column names from the dataset.`}]
 
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
             <div style={{...cardAccent(T.teal),overflow:"hidden",flex:1}}>
-              <div onClick={()=>setSummaryOpen(o=>!o)} style={{padding:"14px 18px 12px",borderBottom:summaryOpen?`1px solid ${T.border}`:"none",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",background:"linear-gradient(180deg, rgba(78,205,196,0.05) 0%, transparent 100%)"}}>
+              <div onClick={()=>setSummaryOpen(o=>!o)} style={{padding:"14px 18px 12px",borderBottom:summaryOpen?`1px solid ${T.border}`:"none",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",background:"linear-gradient(180deg, rgba(58,111,212,0.05) 0%, transparent 100%)"}}>
                 <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>The Brief</span>
                 <span style={{fontSize:14,color:T.dim}}>{summaryOpen?"−":"+"}</span>
               </div>
               {summaryOpen&&<div style={{padding:"16px 18px"}}><p style={{fontSize:13,lineHeight:1.75,color:T.text,margin:0}}>{analysis?.narrative}</p></div>}
             </div>
             <div style={{...cardAccent(T.navy),overflow:"hidden"}}>
-              <div onClick={()=>setSignalsOpen(o=>!o)} style={{padding:"14px 18px 12px",borderBottom:signalsOpen?`1px solid ${T.border}`:"none",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",background:"linear-gradient(180deg, rgba(26,0,102,0.04) 0%, transparent 100%)"}}>
+              <div onClick={()=>setSignalsOpen(o=>!o)} style={{padding:"14px 18px 12px",borderBottom:signalsOpen?`1px solid ${T.border}`:"none",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",background:"linear-gradient(180deg, rgba(30,58,110,0.04) 0%, transparent 100%)"}}>
                 <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>Key signals</span>
                 <span style={{fontSize:14,color:T.dim}}>{signalsOpen?"−":"+"}</span>
               </div>
@@ -1458,12 +1458,12 @@ xKey and yKeys must be exact column names from the dataset.`}]
                 background: "linear-gradient(180deg, #0f1419 0%, #0a0e14 100%)",
                 borderTop: `2px solid ${T.teal}`,
                 padding: "16px 18px 18px",
-                boxShadow: "inset 0 1px 0 rgba(78,205,196,0.12)",
+                boxShadow: "inset 0 1px 0 rgba(58,111,212,0.12)",
               }}
             >
               <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 14, gap: 12 }}>
                 <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(78,205,196,0.85)", marginBottom: 4 }}>Recruiter leaderboard</div>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(58,111,212,0.85)", marginBottom: 4 }}>Recruiter leaderboard</div>
                   <div style={{ fontSize: 15, fontWeight: 700, color: "#F1F5F9", letterSpacing: -0.3 }}>Open reqs by recruiter</div>
                 </div>
                 <div style={{ fontSize: 11, color: "rgba(148,163,184,0.95)", fontWeight: 500 }}>{filteredData.length} rows in view</div>
@@ -1485,8 +1485,8 @@ xKey and yKeys must be exact column names from the dataset.`}]
                           width: 28,
                           height: 28,
                           borderRadius: 8,
-                          background: "rgba(78,205,196,0.15)",
-                          border: "1px solid rgba(78,205,196,0.35)",
+                          background: "rgba(58,111,212,0.15)",
+                          border: "1px solid rgba(58,111,212,0.35)",
                           color: T.teal,
                           fontSize: 13,
                           fontWeight: 800,
@@ -1510,7 +1510,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
                               width: `${pct}%`,
                               borderRadius: 999,
                               background: `linear-gradient(90deg, ${T.navy2} 0%, ${T.teal2} 100%)`,
-                              boxShadow: `0 0 12px rgba(78,205,196,0.35)`,
+                              boxShadow: `0 0 12px rgba(58,111,212,0.35)`,
                               transition: "width .4s ease",
                             }}
                           />
@@ -1548,7 +1548,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
         {/* Drill-down */}
         {drillDown&&(
           <div style={{...cardAccent(T.teal),borderTop:`2px solid ${T.teal}`,overflow:"hidden",marginBottom:16,animation:"su .2s ease"}}>
-            <div style={{padding:"14px 18px 12px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(180deg, rgba(78,205,196,0.07) 0%, transparent 100%)"}}>
+            <div style={{padding:"14px 18px 12px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:"linear-gradient(180deg, rgba(58,111,212,0.07) 0%, transparent 100%)"}}>
               <div>
                 <div style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>{drillDown.isRecruiter?"Recruiter brief":"Drill-down"}</div>
                 <div style={{fontSize:13,fontWeight:600,color:T.navy,marginTop:2}}>{drillDown.label} <span style={{color:T.dim,fontWeight:400}}>· {drillDown.rows.length} row{drillDown.rows.length!==1?"s":""}</span></div>
@@ -1573,7 +1573,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
         {drawerOpen && drillDown && drawerDetail && (
           <div style={{position:"fixed",inset:0,zIndex:200,display:"flex",justifyContent:"flex-end"}} role="dialog" aria-modal="true" aria-labelledby="drawer-title">
             <div onClick={closeDrawer} style={{position:"absolute",inset:0,background:"rgba(15,23,42,0.42)",backdropFilter:"blur(2px)",WebkitBackdropFilter:"blur(2px)"}}/>
-            <div className="drawer-panel-anim" onClick={(e)=>e.stopPropagation()} style={{position:"relative",width:"min(440px,100vw)",maxWidth:"100%",height:"100%",background:T.card,boxShadow:"-12px 0 48px rgba(26,0,102,0.18)",display:"flex",flexDirection:"column",alignSelf:"stretch"}}>
+            <div className="drawer-panel-anim" onClick={(e)=>e.stopPropagation()} style={{position:"relative",width:"min(440px,100vw)",maxWidth:"100%",height:"100%",background:T.card,boxShadow:"-12px 0 48px rgba(30,58,110,0.18)",display:"flex",flexDirection:"column",alignSelf:"stretch"}}>
               <div style={{background:T.navy,flexShrink:0,padding:"16px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
                 <h2 id="drawer-title" style={{margin:0,fontSize:18,fontWeight:700,color:"#fff",letterSpacing:-0.4,lineHeight:1.25}}>{drillDown.label}</h2>
                 <button type="button" className="drawer-x" onClick={closeDrawer} aria-label="Close panel" style={{flexShrink:0,width:40,height:40,borderRadius:8,border:"none",background:"transparent",color:"rgba(255,255,255,0.92)",fontSize:24,lineHeight:1,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"Inter,sans-serif",transition:"background .15s"}}>×</button>
@@ -1642,7 +1642,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
 
         {/* Ask Signal */}
         <div style={{...cardAccent(T.navy),overflow:"hidden"}}>
-          <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:8,background:"linear-gradient(180deg, rgba(26,0,102,0.05) 0%, transparent 100%)"}}>
+          <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:8,background:"linear-gradient(180deg, rgba(30,58,110,0.05) 0%, transparent 100%)"}}>
             <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>Ask Signal</span>
             <span style={{fontSize:12,color:T.dim}}>— ask anything about this report</span>
           </div>
