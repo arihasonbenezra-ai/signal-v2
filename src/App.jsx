@@ -37,6 +37,525 @@ function SignalLogoMark({ size = 32 }) {
   );
 }
 
+const SIGNAL_SYSTEM_PROMPT = `You are Signal — an expert talent analytics analyst specializing in recruiting and talent acquisition. You have deep expertise in TA metrics, recruiting operations, and pipeline management.
+
+When analyzing a recruiting report, you always look for and comment on:
+- Time to fill and how it compares to industry benchmarks (avg 30-45 days for tech roles)
+- Pipeline conversion rates at each stage (application → screen → interview → offer → hire)
+- Offer acceptance rates (below 85% is a red flag)
+- Recruiter workload distribution and imbalance
+- Roles that have been open too long (60+ days = critical)
+- Source of hire effectiveness
+- Interview-to-offer ratio (above 5:1 suggests screening issues)
+- Any bottlenecks or drop-off points in the pipeline
+
+Your response must always follow this exact structure:
+
+PIPELINE SUMMARY
+[2-3 sentence overview of the overall health of the pipeline]
+
+KEY METRICS
+[List the most important numbers you found, formatted cleanly]
+
+RED FLAGS 🚩
+[List any metrics that are concerning and explain why in plain language]
+
+BRIGHT SPOTS ✓
+[List what is working well]
+
+WHAT TO DO NOW
+[3-5 specific, prioritized action items. Be direct. Say exactly what needs to happen.]
+
+Speak like a sharp, experienced TA leader presenting to a VP of People — confident, specific, and actionable. Never be vague. Never just restate the data without interpretation.`;
+
+const CHART_PALETTE = { primary: "#0E7EA8", secondary: "#7EC8E3", dark: "#1A2A3A" };
+const STEEL_BLUE = "#3D5A80";
+
+function normalizeArrayField(v) {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v.map(String).map((s) => s.trim()).filter(Boolean);
+  if (typeof v === "string") {
+    return v.split(/\n/).map((l) => l.replace(/^[-•*·\d.)\s]+/i, "").trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function parseExecutiveBriefFromText(text) {
+  if (!text || typeof text !== "string") return null;
+  const t = text.replace(/\r\n/g, "\n");
+  const grab = (startRe, endRes) => {
+    const m = t.match(startRe);
+    if (!m) return "";
+    const rest = t.slice(m.index + m[0].length);
+    let cut = rest.length;
+    for (const endRe of endRes) {
+      const n = rest.search(endRe);
+      if (n >= 0 && n < cut) cut = n;
+    }
+    return rest.slice(0, cut).trim();
+  };
+  const ps = grab(/PIPELINE SUMMARY\s*/i, [/KEY METRICS/i, /RED FLAGS/i]);
+  const km = grab(/KEY METRICS\s*/i, [/RED FLAGS/i, /BRIGHT SPOTS/i]);
+  const rf = grab(/RED FLAGS\s*🚩?\s*/i, [/BRIGHT SPOTS/i, /WHAT TO DO/i]);
+  const bs = grab(/BRIGHT SPOTS\s*✓?\s*/i, [/WHAT TO DO/i]);
+  const wd = grab(/WHAT TO DO NOW\s*/i, []);
+  const listFromBlock = (block) =>
+    block
+      ? block
+          .split(/\n/)
+          .map((l) => l.replace(/^[-•*·\d.)\s]+/, "").trim())
+          .filter(Boolean)
+      : [];
+  if (!ps && !km && !rf) return null;
+  return {
+    pipelineSummary: ps || "",
+    keyMetrics: listFromBlock(km),
+    redFlags: listFromBlock(rf),
+    brightSpots: listFromBlock(bs),
+    whatToDoNow: listFromBlock(wd),
+  };
+}
+
+function getExecutiveSectionsFromAnalysis(analysis) {
+  if (!analysis) return null;
+  const keyMetrics = normalizeArrayField(analysis.keyMetrics);
+  const hasStructured =
+    !!(analysis.pipelineSummary && String(analysis.pipelineSummary).trim()) ||
+    keyMetrics.length > 0 ||
+    normalizeArrayField(analysis.redFlags).length > 0 ||
+    normalizeArrayField(analysis.brightSpots).length > 0 ||
+    normalizeArrayField(analysis.whatToDoNow).length > 0;
+
+  if (hasStructured) {
+    return {
+      pipelineSummary: String(analysis.pipelineSummary?.trim() || analysis.narrative || "").trim(),
+      keyMetrics,
+      redFlags: normalizeArrayField(analysis.redFlags),
+      brightSpots: normalizeArrayField(analysis.brightSpots),
+      whatToDoNow: normalizeArrayField(analysis.whatToDoNow),
+    };
+  }
+  const parsed = parseExecutiveBriefFromText([analysis.narrative, ...(analysis.insights || [])].filter(Boolean).join("\n\n"));
+  if (parsed && (parsed.pipelineSummary || parsed.keyMetrics.length)) return parsed;
+  return {
+    pipelineSummary: analysis.narrative || "",
+    keyMetrics: (analysis.insights || []).slice(0, 8).map(String),
+    redFlags: [],
+    brightSpots: [],
+    whatToDoNow: [],
+  };
+}
+
+function findSourceCol(keys) {
+  return keys.find((h) => /source|channel|referral|how\s*heard|candidate\s*source/i.test(h));
+}
+
+function extractStatCardsFromSections(sections, filteredData, data, recruiterColH, statusColH) {
+  const cards = [];
+  const metrics = sections?.keyMetrics || [];
+  for (const line of metrics.slice(0, 5)) {
+    const m = line.match(/^(.{1,42}?)[\s:–-]+(.+)$/);
+    if (m) cards.push({ label: m[1].trim(), value: m[2].trim() });
+    else if (line.length < 80) cards.push({ label: "Metric", value: line });
+    if (cards.length >= 3) break;
+  }
+  if (cards.length < 3) {
+    cards.push({ label: "Rows in view", value: String(filteredData.length) });
+    if (cards.length < 3) cards.push({ label: "Total rows", value: String(data.length) });
+    if (cards.length < 3 && recruiterColH) {
+      const n = new Set(filteredData.map((r) => String(r[recruiterColH] ?? ""))).size;
+      cards.push({ label: "Recruiters", value: String(n) });
+    }
+    if (cards.length < 3 && statusColH) {
+      const open = filteredData.filter((r) => !/filled/i.test(String(r[statusColH] ?? ""))).length;
+      cards.push({ label: "Open pipeline", value: String(open) });
+    }
+  }
+  return cards.slice(0, 3);
+}
+
+function stripLeadingActionNumber(s) {
+  return String(s ?? "").replace(/^\d+[.)]\s*/, "").trim();
+}
+
+/** Split a raw action line into a short title + 1–2 sentence explanation. */
+function parseActionItemTitleDetail(raw) {
+  const t = stripLeadingActionNumber(raw);
+  if (!t) return { title: "", detail: "" };
+  const em = t.match(/^(.{2,100}?)\s*[—–\-]\s+(.+)$/s);
+  if (em) return { title: em[1].trim(), detail: em[2].trim().replace(/\s+/g, " ") };
+  const col = t.match(/^([^:]{2,80}):\s+(.+)$/s);
+  if (col) return { title: col[1].trim(), detail: col[2].trim().replace(/\s+/g, " ") };
+  const dot = t.indexOf(". ");
+  if (dot > 8 && dot < 160) {
+    const head = t.slice(0, dot).trim();
+    const tail = t.slice(dot + 1).trim();
+    if (tail.length >= 12) return { title: head, detail: tail };
+  }
+  return { title: t, detail: "" };
+}
+
+function buildExportReportText(analysis, sections, fileName, filteredLen, totalLen, activeFilters) {
+  const lines = [];
+  const push = (s = "") => lines.push(s);
+  const fe = Object.entries(activeFilters || {}).filter(([, v]) => v);
+  push("SIGNAL REPORT");
+  push("=".repeat(48));
+  push(`Title: ${analysis?.title || "Untitled"}`);
+  push(`Source file: ${fileName || "—"}`);
+  push(`Generated: ${new Date().toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`);
+  if (analysis?.reportType) push(`Report type: ${analysis.reportType}`);
+  if (analysis?.ats && analysis.ats !== "unknown") push(`ATS (detected): ${analysis.ats}`);
+  push(`Rows in view: ${filteredLen.toLocaleString()} (total ${totalLen.toLocaleString()})`);
+  if (fe.length) push(`Active filters: ${fe.map(([k, v]) => `${k.replace(/Primary /i, "")}: ${v}`).join(" · ")}`);
+  push("");
+  const sec = sections || {};
+  if (sec.pipelineSummary) {
+    push("PIPELINE SUMMARY");
+    push(sec.pipelineSummary);
+    push("");
+  }
+  if (sec.keyMetrics?.length) {
+    push("KEY METRICS");
+    sec.keyMetrics.forEach((m) => push(`• ${m}`));
+    push("");
+  }
+  if (sec.redFlags?.length) {
+    push("RED FLAGS");
+    sec.redFlags.forEach((m) => push(`• ${m}`));
+    push("");
+  }
+  if (sec.brightSpots?.length) {
+    push("BRIGHT SPOTS");
+    sec.brightSpots.forEach((m) => push(`• ${m}`));
+    push("");
+  }
+  if (sec.whatToDoNow?.length) {
+    push("WHAT TO DO NOW");
+    sec.whatToDoNow.forEach((m, i) => push(`${i + 1}. ${m}`));
+    push("");
+  }
+  if (analysis?.narrative) {
+    push("NARRATIVE (CHRO)");
+    push(analysis.narrative);
+    push("");
+  }
+  if (analysis?.insights?.length) {
+    push("KEY SIGNALS");
+    analysis.insights.forEach((m, i) => push(`${i + 1}. ${m}`));
+    push("");
+  }
+  if (analysis?.suggestedQuestions?.length) {
+    push("SUGGESTED QUESTIONS");
+    analysis.suggestedQuestions.forEach((q, i) => push(`${i + 1}. ${q}`));
+    push("");
+  }
+  push("—");
+  push("Exported from Signal");
+  return lines.join("\n");
+}
+
+function ExecutiveDashboardLeft({ sections }) {
+  if (!sections) return null;
+  const ps = sections.pipelineSummary || "";
+  const km = sections.keyMetrics || [];
+  const rf = sections.redFlags || [];
+  const bs = sections.brightSpots || [];
+  const sectionTitle = (label, color = T.muted) => (
+    <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color, marginBottom: 10 }}>{label}</div>
+  );
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <div>
+        <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase", color: STEEL_BLUE, marginBottom: 10 }}>Pipeline summary</div>
+        <p style={{ fontSize: 14, lineHeight: 1.72, color: T.text, margin: 0 }}>{ps || "—"}</p>
+      </div>
+      {km.length > 0 && (
+        <div>
+          {sectionTitle("Key metrics")}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10 }}>
+            {km.map((line, i) => {
+              const colon = line.indexOf("—") >= 0 ? "—" : line.indexOf(":") >= 0 ? ":" : null;
+              let label = line;
+              let val = "";
+              if (colon) {
+                const parts = line.split(colon);
+                label = parts[0].trim();
+                val = parts.slice(1).join(colon).trim();
+              } else {
+                const m = line.match(/^(.{1,48}?)[\s]+([\d%$,.\-+]+.*)$/);
+                if (m) {
+                  label = m[1].trim();
+                  val = m[2].trim();
+                }
+              }
+              return (
+                <div
+                  key={i}
+                  style={{
+                    background: "linear-gradient(180deg, #fff 0%, #f8fafc 100%)",
+                    border: `1px solid ${CHART_PALETTE.secondary}`,
+                    borderRadius: 10,
+                    padding: "12px 14px",
+                    boxShadow: "0 2px 8px rgba(14,126,168,0.06)",
+                  }}
+                >
+                  <div style={{ fontSize: 10, fontWeight: 700, color: CHART_PALETTE.dark, letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 6, lineHeight: 1.35 }}>{label}</div>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: CHART_PALETTE.primary, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>{val || line}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {rf.length > 0 && (
+        <div style={{ borderLeft: `4px solid ${T.red}`, paddingLeft: 14, background: T.redLight, borderRadius: "0 10px 10px 0", padding: "12px 14px 12px 16px" }}>
+          {sectionTitle("Red flags", T.red)}
+          <ul style={{ margin: 0, paddingLeft: 18, color: T.text, fontSize: 13, lineHeight: 1.65 }}>
+            {rf.map((t, i) => (
+              <li key={i} style={{ marginBottom: i < rf.length - 1 ? 6 : 0 }}>{t}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {bs.length > 0 && (
+        <div style={{ borderLeft: `4px solid ${T.green}`, paddingLeft: 14, background: T.greenLight, borderRadius: "0 10px 10px 0", padding: "12px 14px 12px 16px" }}>
+          {sectionTitle("Bright spots", T.green)}
+          <ul style={{ margin: 0, paddingLeft: 18, color: T.text, fontSize: 13, lineHeight: 1.65 }}>
+            {bs.map((t, i) => (
+              <li key={i} style={{ marginBottom: i < bs.length - 1 ? 6 : 0 }}>{t}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActionItemsPanel({ items, checkedMap, onToggle }) {
+  if (!items?.length) return null;
+  return (
+    <div
+      style={{
+        background: T.card,
+        border: `1px solid ${T.border}`,
+        borderLeft: `4px solid ${CHART_PALETTE.primary}`,
+        borderRadius: 12,
+        boxShadow: "0 1px 2px rgba(30,58,110,0.05), 0 8px 28px rgba(0,0,0,0.04)",
+        overflow: "hidden",
+        marginBottom: 22,
+      }}
+    >
+      <div
+        style={{
+          padding: "16px 20px 14px",
+          borderBottom: `1px solid ${T.border}`,
+          background: "linear-gradient(180deg, rgba(14,126,168,0.06) 0%, transparent 100%)",
+        }}
+      >
+        <div style={{ fontSize: 18, fontWeight: 700, color: T.navy, letterSpacing: -0.3, marginBottom: 4 }}>Your next steps</div>
+        <div style={{ fontSize: 13, color: T.muted, fontWeight: 500 }}>Based on Signal's analysis</div>
+      </div>
+      <div style={{ padding: "16px 18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
+        {items.map((item, i) => {
+          const { title, detail } = parseActionItemTitleDetail(item.raw);
+          const done = !!checkedMap[i];
+          return (
+            <div
+              key={i}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 14,
+                padding: "14px 16px",
+                background: done ? T.surface : T.card,
+                border: `1px solid ${T.border}`,
+                borderRadius: 10,
+                boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+                opacity: done ? 0.88 : 1,
+                transition: "opacity .15s, background .15s",
+              }}
+            >
+              <div
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: "50%",
+                  background: CHART_PALETTE.primary,
+                  color: "#fff",
+                  fontSize: 14,
+                  fontWeight: 800,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {i + 1}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 700,
+                    color: T.text,
+                    lineHeight: 1.45,
+                    marginBottom: detail ? 6 : 0,
+                    textDecoration: done ? "line-through" : "none",
+                  }}
+                >
+                  {title || item.raw}
+                </div>
+                {detail ? (
+                  <div style={{ fontSize: 13, color: T.muted, lineHeight: 1.6 }}>{detail}</div>
+                ) : null}
+              </div>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                  paddingTop: 2,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={done}
+                  onChange={() => onToggle(i)}
+                  aria-label={`Mark action ${i + 1} done`}
+                  style={{
+                    width: 20,
+                    height: 20,
+                    cursor: "pointer",
+                    accentColor: CHART_PALETTE.primary,
+                  }}
+                />
+              </label>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ExecutiveDashboardCharts({ pipelineBar, sourceDonut, statCards, chartReady }) {
+  const barRef = useRef(null);
+  const donutRef = useRef(null);
+  const barInst = useRef(null);
+  const donutInst = useRef(null);
+
+  useEffect(() => {
+    if (!chartReady || typeof window === "undefined" || !window.Chart) return;
+    const Chart = window.Chart;
+    if (barInst.current) {
+      barInst.current.destroy();
+      barInst.current = null;
+    }
+    if (donutInst.current) {
+      donutInst.current.destroy();
+      donutInst.current = null;
+    }
+    if (pipelineBar?.labels?.length && barRef.current) {
+      const ctx = barRef.current.getContext("2d");
+      barInst.current = new Chart(ctx, {
+        type: "bar",
+        data: {
+          labels: pipelineBar.labels,
+          datasets: [
+            {
+              label: "Volume",
+              data: pipelineBar.values,
+              backgroundColor: CHART_PALETTE.primary,
+              borderRadius: 6,
+              maxBarThickness: 36,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: CHART_PALETTE.dark, maxRotation: 45, minRotation: 0, font: { size: 10 } }, grid: { display: false } },
+            y: { beginAtZero: true, ticks: { color: CHART_PALETTE.dark }, grid: { color: "rgba(26,42,58,0.08)" } },
+          },
+        },
+      });
+    }
+    if (sourceDonut?.labels?.length && donutRef.current) {
+      const ctx = donutRef.current.getContext("2d");
+      const n = sourceDonut.labels.length;
+      const bg = [CHART_PALETTE.primary, CHART_PALETTE.secondary, CHART_PALETTE.dark, "#5BA3C6", "#9FD4E8", "#2d4a5e"];
+      donutInst.current = new Chart(ctx, {
+        type: "doughnut",
+        data: {
+          labels: sourceDonut.labels,
+          datasets: [{ data: sourceDonut.values, backgroundColor: bg.slice(0, n), borderWidth: 0, hoverOffset: 6 }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: "62%",
+          plugins: {
+            legend: { position: "bottom", labels: { color: CHART_PALETTE.dark, boxWidth: 10, font: { size: 10 } } },
+          },
+        },
+      });
+    }
+    return () => {
+      barInst.current?.destroy();
+      donutInst.current?.destroy();
+      barInst.current = null;
+      donutInst.current = null;
+    };
+  }, [chartReady, pipelineBar, sourceDonut]);
+
+  const hasCharts = (pipelineBar?.labels?.length > 0) || (sourceDonut?.labels?.length > 0);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {pipelineBar?.labels?.length > 0 && (
+        <div style={{ background: "#fff", border: `1px solid ${CHART_PALETTE.secondary}`, borderRadius: 12, padding: 12, boxShadow: "0 4px 20px rgba(14,126,168,0.08)" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: CHART_PALETTE.dark, textTransform: "uppercase", marginBottom: 8 }}>Pipeline by stage</div>
+          <div style={{ height: 200, position: "relative" }}>
+            <canvas ref={barRef} />
+          </div>
+        </div>
+      )}
+      {sourceDonut?.labels?.length > 0 && (
+        <div style={{ background: "#fff", border: `1px solid ${CHART_PALETTE.secondary}`, borderRadius: 12, padding: 12, boxShadow: "0 4px 20px rgba(14,126,168,0.08)" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: CHART_PALETTE.dark, textTransform: "uppercase", marginBottom: 8 }}>Source breakdown</div>
+          <div style={{ height: 220, position: "relative" }}>
+            <canvas ref={donutRef} />
+          </div>
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(100px, 1fr))", gap: 10, maxWidth: "100%" }}
+      >
+        {statCards.map((c, i) => (
+          <div
+            key={i}
+            style={{
+              background: `linear-gradient(145deg, ${CHART_PALETTE.dark} 0%, #24364a 100%)`,
+              borderRadius: 10,
+              padding: "12px 14px",
+              border: `1px solid rgba(126,200,227,0.35)`,
+              boxShadow: "0 6px 16px rgba(26,42,58,0.2)",
+            }}
+          >
+            <div style={{ fontSize: 10, fontWeight: 600, color: CHART_PALETTE.secondary, letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 6 }}>{c.label}</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#fff", fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>{c.value}</div>
+          </div>
+        ))}
+      </div>
+      {!chartReady && <div style={{ fontSize: 12, color: T.muted, textAlign: "center", padding: 8 }}>Loading charts…</div>}
+    </div>
+  );
+}
+
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 const STATUS_MAP = {"filled":"Filled","on hold":"On Hold"};
 function normalizeStatus(v) {
@@ -308,12 +827,15 @@ export default function Signal() {
   const [drawerFetchKey, setDrawerFetchKey] = useState(0);
   const [drawerAi, setDrawerAi] = useState("");
   const [drawerAiLoading, setDrawerAiLoading] = useState(false);
-  const [summaryOpen, setSummaryOpen] = useState(true);
   const [signalsOpen, setSignalsOpen] = useState(true);
   const [viewMode, setViewMode] = useState("chart");
   const [vizView, setVizView] = useState("bar");
   const [donutGroupBy, setDonutGroupBy] = useState("recruiter");
   const [tableSort, setTableSort] = useState({ key: null, dir: "asc" });
+  const [chartJsReady, setChartJsReady] = useState(false);
+  const [actionItemChecked, setActionItemChecked] = useState({});
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportCopyFlash, setExportCopyFlash] = useState(false);
 
   const fileRef = useRef();
   const chatEndRef = useRef();
@@ -328,6 +850,17 @@ export default function Signal() {
     p.src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
     p.onload=()=>{window._jsPDF=window.jspdf;}; document.head.appendChild(p);
   },[]);
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.Chart) {
+      setChartJsReady(true);
+      return;
+    }
+    const c = document.createElement("script");
+    c.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
+    c.async = true;
+    c.onload = () => setChartJsReady(true);
+    document.head.appendChild(c);
+  }, []);
   useEffect(()=>{chatEndRef.current?.scrollIntoView({behavior:"smooth"});},[chatMsgs]);
   useEffect(() => {
     if (!drawerOpen) {
@@ -344,14 +877,15 @@ export default function Signal() {
     setDrawerAiLoading(true);
     const sample = drillDown.rows.slice(0, 45);
     const keys = Object.keys(sample[0] || {});
-    const prompt = `You are a talent analytics expert. In exactly 2–3 sentences, summarize this slice of the pipeline for "${drillDown.label}". Say what is notable and what most needs attention; cite specific numbers from the data. Plain text only, no markdown, no bullet points.\n\nColumns: ${keys.join(", ")}\nRows (${drillDown.rows.length} total, sample below):\n${JSON.stringify(sample)}`;
+    const userContent = `Analyze this slice of the pipeline for "${drillDown.label}". Apply the Signal framework. If a metric or section cannot be supported from this slice alone, say so briefly and focus on what the data does show.\n\nColumns: ${keys.join(", ")}\nRows (${drillDown.rows.length} total, sample below):\n${JSON.stringify(sample)}`;
     fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
-        max_tokens: 320,
-        messages: [{ role: "user", content: prompt }],
+        max_tokens: 2000,
+        system: SIGNAL_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: userContent }],
       }),
     })
       .then((r) => r.json())
@@ -369,6 +903,24 @@ export default function Signal() {
       });
     return () => { cancelled = true; };
   }, [drawerOpen, drawerFetchKey, drillDown?.label]);
+
+  useEffect(() => {
+    if (analysis) setActionItemChecked({});
+  }, [analysis]);
+
+  useEffect(() => {
+    if (!exportModalOpen) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") setExportModalOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [exportModalOpen]);
 
   // ─── DERIVED: report type detection ──────────────────────────────────────
   const pipelineNumericCols = useMemo(()=>{
@@ -470,6 +1022,50 @@ export default function Signal() {
   const recruiterColH = useMemo(() => headers.find(isRecruiterCol), [headers]);
   const statusColH = useMemo(() => headers.find(isStatusCol), [headers]);
   const deptColH = useMemo(() => headers.find(h => isDeptCol(h) && h !== recruiterColH), [headers, recruiterColH]);
+
+  const executiveSections = useMemo(() => getExecutiveSectionsFromAnalysis(analysis), [analysis]);
+
+  const pipelineBarForDashboard = useMemo(() => {
+    if (!analysis || !filteredData.length || !pipelineNumericCols.length) return null;
+    const labels = pipelineNumericCols.map((c) => shortStage(c));
+    const values = pipelineNumericCols.map((c) =>
+      filteredData.reduce((s, r) => s + (Number(r[c]) || 0), 0)
+    );
+    if (values.every((v) => v === 0)) return null;
+    return { labels, values };
+  }, [analysis, filteredData, pipelineNumericCols]);
+
+  const sourceDonutForDashboard = useMemo(() => {
+    if (!analysis || !filteredData.length) return null;
+    const srcCol = findSourceCol(headers);
+    if (!srcCol) return null;
+    const counts = {};
+    filteredData.forEach((row) => {
+      const k = String(row[srcCol] ?? "").trim() || "Unknown";
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    const sorted = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+    if (sorted.length < 2) return null;
+    return { labels: sorted.map(([l]) => l), values: sorted.map(([, v]) => v) };
+  }, [analysis, filteredData, headers]);
+
+  const dashboardStatCards = useMemo(() => {
+    if (!executiveSections) return [];
+    return extractStatCardsFromSections(executiveSections, filteredData, data, recruiterColH, statusColH).slice(0, 3);
+  }, [executiveSections, filteredData, data, recruiterColH, statusColH]);
+
+  const actionItemsForPanel = useMemo(() => {
+    const raw = executiveSections?.whatToDoNow || [];
+    return raw.map((r) => ({ raw: String(r) }));
+  }, [executiveSections]);
+
+  const exportReportText = useMemo(
+    () =>
+      buildExportReportText(analysis, executiveSections, fileName, filteredData.length, data.length, activeFilters),
+    [analysis, executiveSections, fileName, filteredData.length, data.length, activeFilters]
+  );
 
   const donutDataPack = useMemo(() => {
     if (!analysis || !filteredData.length) return { data: [], groupKey: null, dimensionLabel: "" };
@@ -700,8 +1296,29 @@ export default function Signal() {
 
   const resetAll = () => {
     setActiveFilters({}); setDrillDown(null); setDrawerOpen(false);
-    setSummaryOpen(true); setSignalsOpen(true); setViewMode("chart");
+    setSignalsOpen(true); setViewMode("chart");
     setVizView("bar"); setDonutGroupBy("recruiter"); setTableSort({ key: null, dir: "asc" });
+    setExportModalOpen(false);
+  };
+
+  const copyExportReport = async () => {
+    try {
+      await navigator.clipboard.writeText(exportReportText);
+      setExportCopyFlash(true);
+      setTimeout(() => setExportCopyFlash(false), 2000);
+    } catch {
+      setExportCopyFlash(false);
+    }
+  };
+
+  const downloadExportReport = () => {
+    const blob = new Blob([exportReportText], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `signal-report-${(fileName || "export").replace(/\.[^.]+$/, "")}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const closeDrawer = () => setDrawerOpen(false);
@@ -717,7 +1334,7 @@ export default function Signal() {
         method:"POST", signal:ctrl.signal,
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1200,
+          model:"claude-sonnet-4-20250514", max_tokens:4096,
           messages:[{role:"user",content:`You are a senior talent analytics expert. Return ONLY valid JSON — no markdown, no backticks, no preamble.
 
 Dataset: "${name}"
@@ -731,8 +1348,15 @@ For pipeline reports: xKey = the primary grouping column (recruiter name, depart
 For open-reqs: xKey = recruiter or department column. yKeys = ["Count"].
 chartType: bar for comparisons, line/area for time trends 7+ points, pie for 3-7 proportions.
 
-Return exactly:
-{"title":"<6-8 word title>","reportType":"<type>","ats":"<lever|workday|ashby|greenhouse|unknown>","chartType":"bar"|"line"|"area"|"pie","xKey":"<exact column name>","yKeys":["<column names>"],"narrative":"<2-3 sentences for a CHRO. Biggest finding first. Real numbers.>","insights":["<finding with number>","<finding>","<finding>"],"suggestedQuestions":["<question>","<question>","<question>"]}
+Also produce an executive brief as structured fields (concise, specific, with real numbers from the sample when possible):
+- pipelineSummary: 2–3 sentences on overall pipeline health.
+- keyMetrics: 4–8 strings like "Time to fill — 38 days" or "Offer acceptance — 82%".
+- redFlags: 2–5 concerning findings with brief why.
+- brightSpots: 2–4 things working well.
+- whatToDoNow: 3–5 prioritized action strings (no leading numbers required).
+
+Return exactly this JSON shape (use [] for empty arrays where unknown):
+{"title":"<6-8 word title>","reportType":"<type>","ats":"<lever|workday|ashby|greenhouse|unknown>","chartType":"bar"|"line"|"area"|"pie","xKey":"<exact column name>","yKeys":["<column names>"],"narrative":"<2-3 sentences for a CHRO. Biggest finding first. Real numbers.>","pipelineSummary":"<string>","keyMetrics":["<string>"],"redFlags":["<string>"],"brightSpots":["<string>"],"whatToDoNow":["<string>"],"insights":["<finding with number>","<finding>","<finding>"],"suggestedQuestions":["<question>","<question>","<question>"]}
 
 xKey and yKeys must be exact column names from the dataset.`}]
         })
@@ -789,8 +1413,10 @@ xKey and yKeys must be exact column names from the dataset.`}]
     setChatMsgs(updated);
     try {
       const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:800,
-          system:`Talent analytics expert. Dataset: "${fileName}", ${data.length} rows. Columns: ${headers.join(", ")}. Sample: ${JSON.stringify(filteredData.slice(0,40))}. Be concise, cite numbers.`,
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:2048,
+          system:`${SIGNAL_SYSTEM_PROMPT}
+
+Dataset context for this session: "${fileName}", ${data.length} rows. Columns: ${headers.join(", ")}. Sample rows (current filtered view): ${JSON.stringify(filteredData.slice(0,40))}.`,
           messages:updated})});
       const d=await res.json();
       setChatMsgs([...updated,{role:"assistant",content:d.content[0].text}]);
@@ -1300,6 +1926,13 @@ xKey and yKeys must be exact column names from the dataset.`}]
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button
+              type="button"
+              onClick={() => setExportModalOpen(true)}
+              style={{ background: "transparent", color: T.navy, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontFamily: "Inter,sans-serif", fontSize: 12, fontWeight: 600, transition: "all .15s" }}
+            >
+              Export Report
+            </button>
+            <button
               onClick={async () => { await exportPDF(analysis, summaryCards, fileName, isPipelineReport, pipelineNumericCols, activeFilters, filteredData.length, data.length, filteredData); }}
               style={{ background: "transparent", color: T.navy, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontFamily: "Inter,sans-serif", fontSize: 12, fontWeight: 600, transition: "all .15s" }}
             >
@@ -1315,7 +1948,7 @@ xKey and yKeys must be exact column names from the dataset.`}]
         </div>
       </div>
 
-      <div style={{padding:"24px 24px 56px",maxWidth:1040,margin:"0 auto",width:"100%",boxSizing:"border-box"}}>
+      <div style={{padding:"24px 24px 56px",maxWidth:1180,margin:"0 auto",width:"100%",boxSizing:"border-box"}}>
         <h1 style={{fontSize:22,fontWeight:700,color:T.navy,margin:"0 0 20px",letterSpacing:-0.4,lineHeight:1.25}}>{analysis?.title}</h1>
 
         {/* Filters */}
@@ -1338,6 +1971,46 @@ xKey and yKeys must be exact column names from the dataset.`}]
               </button>
             )}
           </div>
+        )}
+
+        {/* Executive dashboard — AI brief + Chart.js */}
+        <div
+          style={{
+            ...cardAccent(CHART_PALETTE.primary),
+            borderTop: `3px solid ${CHART_PALETTE.primary}`,
+            marginBottom: 22,
+            padding: 0,
+            overflow: "hidden",
+            background: "linear-gradient(145deg, #ffffff 0%, #f5fafc 48%, rgba(126,200,227,0.14) 100%)",
+            boxShadow: "0 10px 40px rgba(14,126,168,0.1)",
+          }}
+        >
+          <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, background: "linear-gradient(90deg, rgba(14,126,168,0.07) 0%, transparent 55%)" }}>
+            <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: CHART_PALETTE.dark }}>Executive dashboard</span>
+            <span style={{ fontSize: 11, color: T.muted, fontWeight: 500 }}>{filteredData.length.toLocaleString()} rows in view</span>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 20, padding: "20px 20px 22px", alignItems: "flex-start" }}>
+            <div style={{ flex: "1 1 60%", minWidth: 300, boxSizing: "border-box", maxWidth: "100%" }}>
+              <ExecutiveDashboardLeft sections={executiveSections} />
+            </div>
+            <div style={{ flex: "1 1 38%", minWidth: 260, boxSizing: "border-box", maxWidth: "100%" }}>
+              <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: CHART_PALETTE.dark, marginBottom: 12 }}>Charts & stats</div>
+              <ExecutiveDashboardCharts
+                pipelineBar={pipelineBarForDashboard}
+                sourceDonut={sourceDonutForDashboard}
+                statCards={dashboardStatCards}
+                chartReady={chartJsReady}
+              />
+            </div>
+          </div>
+        </div>
+
+        {actionItemsForPanel.length > 0 && (
+          <ActionItemsPanel
+            items={actionItemsForPanel}
+            checkedMap={actionItemChecked}
+            onToggle={(i) => setActionItemChecked((m) => ({ ...m, [i]: !m[i] }))}
+          />
         )}
 
         {/* View toggle */}
@@ -1449,13 +2122,6 @@ xKey and yKeys must be exact column names from the dataset.`}]
           </div>
 
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
-            <div style={{...cardAccent(T.teal),overflow:"hidden",flex:1}}>
-              <div onClick={()=>setSummaryOpen(o=>!o)} style={{padding:"14px 18px 12px",borderBottom:summaryOpen?`1px solid ${T.border}`:"none",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",background:"linear-gradient(180deg, rgba(58,111,212,0.05) 0%, transparent 100%)"}}>
-                <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>The Brief</span>
-                <span style={{fontSize:14,color:T.dim}}>{summaryOpen?"−":"+"}</span>
-              </div>
-              {summaryOpen&&<div style={{padding:"16px 18px"}}><p style={{fontSize:13,lineHeight:1.75,color:T.text,margin:0}}>{analysis?.narrative}</p></div>}
-            </div>
             <div style={{...cardAccent(T.navy),overflow:"hidden"}}>
               <div onClick={()=>setSignalsOpen(o=>!o)} style={{padding:"14px 18px 12px",borderBottom:signalsOpen?`1px solid ${T.border}`:"none",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",background:"linear-gradient(180deg, rgba(30,58,110,0.04) 0%, transparent 100%)"}}>
                 <span style={{fontSize:11,fontWeight:600,color:T.muted,letterSpacing:"0.06em",textTransform:"uppercase"}}>Key signals</span>
@@ -1693,6 +2359,152 @@ xKey and yKeys must be exact column names from the dataset.`}]
           </div>
         </div>
       </div>
+
+      {exportModalOpen && (
+        <div
+          role="presentation"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 250,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+            background: "rgba(15,23,42,0.72)",
+            backdropFilter: "blur(6px)",
+            WebkitBackdropFilter: "blur(6px)",
+          }}
+          onClick={() => setExportModalOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="export-report-title"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 560,
+              maxHeight: "90vh",
+              display: "flex",
+              flexDirection: "column",
+              borderRadius: 14,
+              overflow: "hidden",
+              background: "linear-gradient(165deg, #0c1018 0%, #152535 42%, #1a2433 100%)",
+              border: "1px solid rgba(126,200,227,0.38)",
+              boxShadow: "0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(14,126,168,0.15)",
+            }}
+          >
+            <div
+              style={{
+                flexShrink: 0,
+                padding: "16px 20px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                borderBottom: "1px solid rgba(148,163,184,0.15)",
+                background: "linear-gradient(90deg, rgba(14,126,168,0.12) 0%, transparent 60%)",
+              }}
+            >
+              <div>
+                <h2 id="export-report-title" style={{ margin: 0, fontSize: 17, fontWeight: 700, color: "#F8FAFC", letterSpacing: -0.3 }}>
+                  Export Report
+                </h2>
+                <div style={{ fontSize: 12, color: "rgba(148,163,184,0.95)", marginTop: 4, fontWeight: 500 }}>Plain text · ready to share</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExportModalOpen(false)}
+                aria-label="Close"
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 8,
+                  border: "none",
+                  background: "rgba(255,255,255,0.06)",
+                  color: "#e2e8f0",
+                  fontSize: 22,
+                  lineHeight: 1,
+                  cursor: "pointer",
+                  fontFamily: "Inter,sans-serif",
+                  transition: "background .15s",
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div
+              style={{
+                flex: 1,
+                minHeight: 200,
+                maxHeight: "min(52vh, 420px)",
+                overflow: "auto",
+                padding: "16px 20px",
+                margin: 0,
+                fontFamily: "Inter, ui-monospace, monospace",
+                fontSize: 12,
+                lineHeight: 1.65,
+                color: "#e2e8f0",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                background: "rgba(0,0,0,0.2)",
+              }}
+            >
+              {exportReportText}
+            </div>
+            <div
+              style={{
+                flexShrink: 0,
+                padding: "14px 20px 18px",
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 10,
+                justifyContent: "flex-end",
+                borderTop: "1px solid rgba(148,163,184,0.12)",
+                background: "rgba(15,23,42,0.5)",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => void copyExportReport()}
+                style={{
+                  background: "transparent",
+                  color: CHART_PALETTE.secondary,
+                  border: `1px solid rgba(126,200,227,0.45)`,
+                  borderRadius: 8,
+                  padding: "9px 18px",
+                  cursor: "pointer",
+                  fontFamily: "Inter,sans-serif",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  transition: "background .15s, border-color .15s",
+                }}
+              >
+                {exportCopyFlash ? "Copied!" : "Copy to clipboard"}
+              </button>
+              <button
+                type="button"
+                onClick={downloadExportReport}
+                style={{
+                  background: CHART_PALETTE.primary,
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "9px 18px",
+                  cursor: "pointer",
+                  fontFamily: "Inter,sans-serif",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  boxShadow: "0 2px 12px rgba(14,126,168,0.35)",
+                }}
+              >
+                Download as .txt
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
